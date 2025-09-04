@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>IQToolkit.Data.Advantage</AssemblyName>
+    <RootNamespace>IQToolkit.Data.Advantage</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Reference to Advantage.Data.Provider.dll will be added manually -->
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\IQToolkit.Data\IQToolkit.Data.csproj" />
+    <ProjectReference Include="..\IQToolkit.Data.Ado\IQToolkit.Data.Ado.csproj" />
+  </ItemGroup>
+</Project>
