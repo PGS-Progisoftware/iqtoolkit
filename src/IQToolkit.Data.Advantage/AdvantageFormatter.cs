@@ -1,116 +1,163 @@
 using IQToolkit.Data.Common;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Linq.Expressions;
 
 namespace IQToolkit.Data.Advantage
 {
-    public class AdvantageFormatter : SqlFormatter
-    {
-        public AdvantageFormatter(QueryLanguage language) : base(language) { }
+	public class AdvantageFormatter : SqlFormatter
+	{
+		public AdvantageFormatter(QueryLanguage language) : base(language) { }
 
-        protected override void WriteParameterName(string name)
-        {
+		private AdvantageLanguage AdvantageLanguage => this.Language as AdvantageLanguage;
+
+		protected override void WriteParameterName(string name)
+		{
 			// Always use positional parameter marker for Advantage
 			this.Write(":" + name);
 		}
 
-        public static string Format(Expression expression, QueryLanguage language)
-        {
-            var formatter = new AdvantageFormatter(language);
-            formatter.Visit(expression);
-            return formatter.ToString();
-        }
+		public static string Format(Expression expression, QueryLanguage language)
+		{
+			var formatter = new AdvantageFormatter(language);
+			formatter.Visit(expression);
+			return formatter.ToString();
+		}
 
-        protected override void WriteColumnName(string name)
-        {
-            // Always quote column names for Advantage
-            this.Write(this.Language.Quote(name));
-        }
+		protected override void WriteColumnName(string name)
+		{
+			// Always quote column names for Advantage
+			this.Write(this.Language.Quote(name));
+		}
 
-        protected override void WriteTableName(string name)
-        {
-            // Always quote table names for Advantage
-            this.Write(this.Language.Quote(name));
-        }
+		protected override void WriteTableName(string name)
+		{
+			// Always quote table names for Advantage
+			this.Write(this.Language.Quote(name));
+		}
 
+		protected override Expression VisitSelect(SelectExpression select)
+		{
+			this.AddAliases(select.From);
+			this.Write("SELECT ");
+			if (select.IsDistinct)
+			{
+				this.Write("DISTINCT ");
+			}
 
-        protected override Expression VisitSelect(SelectExpression select)
-        {
-            this.AddAliases(select.From);
-            this.Write("SELECT ");
-            if (select.IsDistinct)
-            {
-                this.Write("DISTINCT ");
-            }
-            if (select.Take != null)
-            {
-                this.Write("TOP ");
-                this.Visit(select.Take);
-                if (select.Skip != null)
-                {
-                    this.Write(" START AT ");
-                    // Advantage START AT is 1-based, so add 1 to skip value
-                    if (select.Skip is ConstantExpression ce && ce.Value is int skipVal)
-                    {
-                        this.Write((skipVal + 1).ToString());
-                    }
-                    else
-                    {
-                        this.Write("(");
-                        this.Visit(select.Skip);
-                        this.Write(" + 1)");
-                    }
-                }
-                this.Write(" ");
-            }
-            this.WriteColumns(select.Columns);
-            if (select.From != null)
-            {
-                this.WriteLine(Indentation.Same);
-                this.Write("FROM ");
-                this.VisitSource(select.From);
-            }
-            if (select.Where != null)
-            {
-                this.WriteLine(Indentation.Same);
-                this.Write("WHERE ");
-                this.VisitPredicate(select.Where);
-            }
-            if (select.GroupBy != null && select.GroupBy.Count > 0)
-            {
-                this.WriteLine(Indentation.Same);
-                this.Write("GROUP BY ");
-                for (int i = 0, n = select.GroupBy.Count; i < n; i++)
-                {
-                    if (i > 0)
-                    {
-                        this.Write(", ");
-                    }
-                    this.VisitValue(select.GroupBy[i]);
-                }
-            }
-            if (select.OrderBy != null && select.OrderBy.Count > 0)
-            {
-                this.WriteLine(Indentation.Same);
-                this.Write("ORDER BY ");
-                for (int i = 0, n = select.OrderBy.Count; i < n; i++)
-                {
-                    OrderExpression exp = select.OrderBy[i];
-                    if (i > 0)
-                    {
-                        this.Write(", ");
-                    }
-                    this.VisitValue(exp.Expression);
-                    if (exp.OrderType != OrderType.Ascending)
-                    {
-                        this.Write(" DESC");
-                    }
-                }
-            }
-            return select;
-        }
+			// Advantage pagination: TOP x [START AT y]. START AT is only valid with TOP.
+			// If Skip specified without Take, emit TOP maxint.
+			if (select.Take != null || select.Skip != null)
+			{
+				this.Write("TOP ");
+				if (select.Take != null)
+				{
+					this.Visit(select.Take);
+				}
+				else
+				{
+					this.Write(int.MaxValue.ToString());
+				}
+				if (select.Skip != null)
+				{
+					this.Write(" START AT ");
+					// Advantage START AT is 1-based
+					if (select.Skip is ConstantExpression ce && ce.Value is int skipVal)
+					{
+						this.Write((skipVal + 1).ToString());
+					}
+					else
+					{
+						this.Write("(");
+						this.Visit(select.Skip);
+						this.Write(" + 1)");
+					}
+				}
+				this.Write(" ");
+			}
 
+			this.WriteColumns(select.Columns);
+			if (select.From != null)
+			{
+				this.WriteLine(Indentation.Same);
+				this.Write("FROM ");
+				this.VisitSource(select.From);
+			}
+			if (select.Where != null)
+			{
+				this.WriteLine(Indentation.Same);
+				this.Write("WHERE ");
+				this.VisitPredicate(select.Where);
+			}
+			if (select.GroupBy != null && select.GroupBy.Count > 0)
+			{
+				this.WriteLine(Indentation.Same);
+				this.Write("GROUP BY ");
+				for (int i = 0, n = select.GroupBy.Count; i < n; i++)
+				{
+					if (i > 0)
+					{
+						this.Write(", ");
+					}
+					this.VisitValue(select.GroupBy[i]);
+				}
+			}
+			if (select.OrderBy != null && select.OrderBy.Count > 0)
+			{
+				this.WriteLine(Indentation.Same);
+				this.Write("ORDER BY ");
+				for (int i = 0, n = select.OrderBy.Count; i < n; i++)
+				{
+					OrderExpression exp = select.OrderBy[i];
+					if (i > 0)
+					{
+						this.Write(", ");
+					}
+					this.VisitValue(exp.Expression);
+					if (exp.OrderType != OrderType.Ascending)
+					{
+						this.Write(" DESC");
+					}
+				}
+			}
+
+			return select;
+		}
+
+		protected override Expression VisitMemberAccess(MemberExpression m)
+		{
+			if (m.Member.DeclaringType == typeof(string))
+			{
+				switch (m.Member.Name)
+				{
+					case "Length":
+						this.Write("LEN(");
+						this.Visit(m.Expression);
+						this.Write(")");
+						return m;
+				}
+			}
+			else if (m.Member.DeclaringType == typeof(DateTime) || m.Member.DeclaringType == typeof(DateTimeOffset))
+			{
+				switch (m.Member.Name)
+				{
+					case "Day":
+						this.Write("DAY("); this.Visit(m.Expression); this.Write(")"); return m;
+					case "Month":
+						this.Write("MONTH("); this.Visit(m.Expression); this.Write(")"); return m;
+					case "Year":
+						this.Write("YEAR("); this.Visit(m.Expression); this.Write(")"); return m;
+					case "Hour":
+						this.Write("HOUR("); this.Visit(m.Expression); this.Write(")"); return m;
+					case "Minute":
+						this.Write("MINUTE("); this.Visit(m.Expression); this.Write(")"); return m;
+					case "Second":
+						this.Write("SECOND("); this.Visit(m.Expression); this.Write(")"); return m;
+				}
+			}
+			return base.VisitMemberAccess(m);
+		}
 
 		protected override Expression VisitMethodCall(MethodCallExpression m)
 		{
@@ -135,6 +182,7 @@ namespace IQToolkit.Data.Advantage
 					case "Contains":
 						this.Write("(");
 						this.Visit(m.Object);
+						// For FoxPro CDX behavior, LIKE supports % wildcard and + concatenation is fine
 						this.Write(" LIKE '%' + ");
 						this.Visit(m.Arguments[0]);
 						this.Write(" + '%')");
@@ -178,54 +226,84 @@ namespace IQToolkit.Data.Advantage
 						this.Write(")");
 						return m;
 					case "Substring":
+						// Advantage SUBSTRING(string, start, count) with 1-based start
 						this.Write("SUBSTRING(");
 						this.Visit(m.Object);
 						this.Write(", ");
 						this.Visit(m.Arguments[0]);
-						this.Write(" + 1, ");
 						if (m.Arguments.Count == 2)
 						{
+							this.Write(", ");
 							this.Visit(m.Arguments[1]);
-						}
-						else
-						{
-							this.Write("8000");
 						}
 						this.Write(")");
 						return m;
 					case "Remove":
-						this.Write("STUFF(");
-						this.Visit(m.Object);
-						this.Write(", ");
-						this.Visit(m.Arguments[0]);
-						this.Write(" + 1, ");
-						if (m.Arguments.Count == 2)
+						// Remove(start) => LEFT(str, start)
+						// Remove(start, length) => CONCAT(LEFT(str, start), SUBSTRING(str, start + length + 1))
+						if (m.Arguments.Count == 1)
 						{
-							this.Visit(m.Arguments[1]);
+							this.Write("LEFT(");
+							this.Visit(m.Object);
+							this.Write(", ");
+							this.Visit(m.Arguments[0]);
+							this.Write(")");
 						}
 						else
 						{
-							this.Write("8000");
+							this.Write("(");
+							this.Write("("); // CONCAT emulation with +
+							this.Write("LEFT(");
+							this.Visit(m.Object);
+							this.Write(", ");
+							this.Visit(m.Arguments[0]);
+							this.Write(") + ");
+							this.Write("SUBSTRING(");
+							this.Visit(m.Object);
+							this.Write(", ");
+							// start + length + 1 (1-based)
+							this.Visit(m.Arguments[0]);
+							this.Write(" + ");
+							this.Visit(m.Arguments[1]);
+							this.Write(" + 1)");
+							this.Write(")");
+							this.Write(")");
 						}
-						this.Write(", '')");
 						return m;
 					case "IndexOf":
-						this.Write("(CHARINDEX(");
-						this.Visit(m.Arguments[0]);
-						this.Write(", ");
-						this.Visit(m.Object);
-						if (m.Arguments.Count == 2 && m.Arguments[1].Type == typeof(int))
+						if (m.Arguments.Count == 1)
 						{
+							// Zero-based index: POSITION returns 1-based (0 if not found)
+							this.Write("(POSITION(");
+							this.Visit(m.Arguments[0]);
+							this.Write(" IN ");
+							this.Visit(m.Object);
+							this.Write(") - 1)");
+						}
+						else
+						{
+							// With start index: search in substring and adjust
+							this.Write("(CASE WHEN POSITION(");
+							this.Visit(m.Arguments[0]);
+							this.Write(" IN SUBSTRING(");
+							this.Visit(m.Object);
 							this.Write(", ");
 							this.Visit(m.Arguments[1]);
-							this.Write(" + 1");
+							this.Write(" + 1)) = 0 THEN -1 ELSE (POSITION(");
+							this.Visit(m.Arguments[0]);
+							this.Write(" IN SUBSTRING(");
+							this.Visit(m.Object);
+							this.Write(", ");
+							this.Visit(m.Arguments[1]);
+							this.Write(" + 1)) + ");
+							this.Visit(m.Arguments[1]);
+							this.Write(" - 1) END)");
 						}
-						this.Write(") - 1)");
 						return m;
 					case "Trim":
-						this.Write("RTRIM(LTRIM(");
+						this.Write("TRIM(");
 						this.Visit(m.Object);
-						this.Write("))");
+						this.Write(")");
 						return m;
 				}
 			}
@@ -236,58 +314,59 @@ namespace IQToolkit.Data.Advantage
 					case "op_Subtract":
 						if (m.Arguments[1].Type == typeof(DateTime))
 						{
-							this.Write("DATEDIFF(");
-							this.Visit(m.Arguments[0]);
-							this.Write(", ");
+							// Difference in milliseconds
+							this.Write("TIMESTAMPDIFF(SQL_TSI_FRAC_SECOND, ");
 							this.Visit(m.Arguments[1]);
+							this.Write(", ");
+							this.Visit(m.Arguments[0]);
 							this.Write(")");
 							return m;
 						}
 						break;
 					case "AddYears":
-						this.Write("DATEADD(YYYY,");
+						this.Write("TIMESTAMPADD(SQL_TSI_YEAR,");
 						this.Visit(m.Arguments[0]);
 						this.Write(",");
 						this.Visit(m.Object);
 						this.Write(")");
 						return m;
 					case "AddMonths":
-						this.Write("DATEADD(MM,");
+						this.Write("TIMESTAMPADD(SQL_TSI_MONTH,");
 						this.Visit(m.Arguments[0]);
 						this.Write(",");
 						this.Visit(m.Object);
 						this.Write(")");
 						return m;
 					case "AddDays":
-						this.Write("DATEADD(DAY,");
+						this.Write("TIMESTAMPADD(SQL_TSI_DAY,");
 						this.Visit(m.Arguments[0]);
 						this.Write(",");
 						this.Visit(m.Object);
 						this.Write(")");
 						return m;
 					case "AddHours":
-						this.Write("DATEADD(HH,");
+						this.Write("TIMESTAMPADD(SQL_TSI_HOUR,");
 						this.Visit(m.Arguments[0]);
 						this.Write(",");
 						this.Visit(m.Object);
 						this.Write(")");
 						return m;
 					case "AddMinutes":
-						this.Write("DATEADD(MI,");
+						this.Write("TIMESTAMPADD(SQL_TSI_MINUTE,");
 						this.Visit(m.Arguments[0]);
 						this.Write(",");
 						this.Visit(m.Object);
 						this.Write(")");
 						return m;
 					case "AddSeconds":
-						this.Write("DATEADD(SS,");
+						this.Write("TIMESTAMPADD(SQL_TSI_SECOND,");
 						this.Visit(m.Arguments[0]);
 						this.Write(",");
 						this.Visit(m.Object);
 						this.Write(")");
 						return m;
 					case "AddMilliseconds":
-						this.Write("DATEADD(MS,");
+						this.Write("TIMESTAMPADD(SQL_TSI_FRAC_SECOND,");
 						this.Visit(m.Arguments[0]);
 						this.Write(",");
 						this.Visit(m.Object);
@@ -420,9 +499,9 @@ namespace IQToolkit.Data.Advantage
 			{
 				if (m.Object.Type != typeof(string))
 				{
-					this.Write("CONVERT(NVARCHAR, ");
+					this.Write("CAST(");
 					this.Visit(m.Object);
-					this.Write(")");
+					this.Write(" AS SQL_VARCHAR)");
 				}
 				else
 				{

@@ -1,26 +1,25 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net48</TargetFramework>
-    <RootNamespace>Test.Advantage</RootNamespace>
-    <AssemblyName>Test.Advantage</AssemblyName>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
   </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="System.Memory" Version="4.6.3" />
-  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\IQToolkit.Data.Advantage\IQToolkit.Data.Advantage.csproj" />
+    <ProjectReference Include="..\IQToolkit.Data\IQToolkit.Data.csproj" />
   </ItemGroup>
-  <ItemGroup>
-    <Reference Include="Advantage.Data.Provider">
-      <HintPath>Z:\Redistribute\Advantage.Data.Provider.dll</HintPath>
-    </Reference>
-  </ItemGroup>
+
   <ItemGroup>
     <None Update="ace64.dll">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Update="axcws64.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="Advantage.Data.Provider.dll">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
   </ItemGroup>

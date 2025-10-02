@@ -12,6 +12,8 @@ namespace IQToolkit.Data.Advantage
 
         public AdvantageLanguage() { }
 
+        public AdvantageProviderSettings Settings { get; set; }
+
         public override QueryTypeSystem TypeSystem => typeSystem;
 
         public override string Quote(string name)
