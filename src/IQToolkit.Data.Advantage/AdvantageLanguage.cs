@@ -8,11 +8,9 @@ namespace IQToolkit.Data.Advantage
 {
     public class AdvantageLanguage : QueryLanguage
     {
-        private static readonly SqlTypeSystem typeSystem = new AdvantageTypeSystem();
+        private static readonly SqlTypeSystem typeSystem = new SqlTypeSystem();
 
         public AdvantageLanguage() { }
-
-        public AdvantageProviderSettings Settings { get; set; }
 
         public override QueryTypeSystem TypeSystem => typeSystem;
 

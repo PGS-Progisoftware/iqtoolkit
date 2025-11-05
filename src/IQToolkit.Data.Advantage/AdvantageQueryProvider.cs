@@ -11,34 +11,43 @@ namespace IQToolkit.Data.Advantage
 {
     public class AdvantageQueryProvider : DbEntityProvider
     {
-        public AdvantageProviderSettings Settings { get; }
         public bool EnableQueryTiming { get; set; } = true;
 
-        // Convenience specialized providers
-        public static AdvantageQueryProvider CreateForCdx(string connectionString)
+        #region Factory Methods
+
+        /// <summary>
+        /// Creates a new AdvantageQueryProvider with the specified connection string.
+        /// </summary>
+        public static AdvantageQueryProvider Create(string connectionString)
         {
-            return new AdvantageQueryProvider(connectionString, new AdvantageProviderSettings { TableType = AdvantageTableType.Cdx });
+            return new AdvantageQueryProvider(connectionString);
         }
 
-        public static AdvantageQueryProvider CreateForAdt(string connectionString)
+        #endregion
+
+        #region Constructors
+
+        public AdvantageQueryProvider(string connectionString, QueryPolicy policy = null)
+            : this(CreateConnection(connectionString), new AdvantageMapping(), policy)
         {
-            return new AdvantageQueryProvider(connectionString, new AdvantageProviderSettings { TableType = AdvantageTableType.Adt });
         }
 
-		public AdvantageQueryProvider(string connectionString, AdvantageProviderSettings settings = null, QueryPolicy policy = null)
-            : this(CreateConnection(connectionString), null, policy, settings) { }
+        public AdvantageQueryProvider(DbConnection connection)
+            : this(connection, new AdvantageMapping(), null)
+        {
+        }
 
-        public AdvantageQueryProvider(DbConnection connection, AdvantageProviderSettings settings = null)
-            : this(connection, null, null, settings) { }
-
-        public AdvantageQueryProvider(DbConnection connection, QueryMapping mapping, QueryPolicy policy, AdvantageProviderSettings settings = null)
+        public AdvantageQueryProvider(DbConnection connection, QueryMapping mapping, QueryPolicy policy)
             : base(connection, new AdvantageLanguage(), mapping, policy)
         {
-            this.Settings = settings ?? new AdvantageProviderSettings();
-            if (this.Language is AdvantageLanguage advLang)
-            {
-                advLang.Settings = this.Settings;
-            }
+        }
+
+        #endregion
+
+        // Override the Executor to ensure parameters are unnamed for positional parameters
+        protected override QueryExecutor CreateExecutor()
+        {
+            return new AdvantageExecutor(this);
         }
 
         private static DbConnection CreateConnection(string connectionString)
@@ -47,12 +56,6 @@ namespace IQToolkit.Data.Advantage
             var conn = factory.CreateConnection();
             conn.ConnectionString = connectionString;
             return conn;
-        }
-
-        // Override the Executor to ensure parameters are unnamed for positional parameters
-        protected override QueryExecutor CreateExecutor()
-        {
-            return new AdvantageExecutor(this);
         }
 
         class AdvantageExecutor : Executor
@@ -98,39 +101,21 @@ namespace IQToolkit.Data.Advantage
 			private TResult ExecuteWithTiming<TResult>(QueryCommand query, object[] paramValues, Func<QueryCommand, object[], TResult> executeFunc)
 			{
 				var stopwatch = Stopwatch.StartNew();
-				var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
 				
 				try
 				{
-					// Log the query with timestamp
-					_provider.Log.WriteLine($"[{timestamp}] Executing Query:");
-					_provider.Log.WriteLine(query.CommandText);
-					
-					if (query.Parameters.Count > 0)
-					{
-						_provider.Log.WriteLine("Parameters:");
-						for (int i = 0; i < query.Parameters.Count; i++)
-						{
-							var param = query.Parameters[i];
-							var value = i < paramValues.Length ? paramValues[i] : "NULL";
-							_provider.Log.WriteLine($"  {param.Name} = {value}");
-						}
-					}
-					
+					stopwatch = Stopwatch.StartNew();
 					var result = executeFunc(query, paramValues);
 					stopwatch.Stop();
 					
 					// Log execution time
-					_provider.Log.WriteLine($"Query completed in {stopwatch.ElapsedMilliseconds}ms ({stopwatch.ElapsedTicks} ticks)");
-					_provider.Log.WriteLine(new string('-', 50));
-					
+					_provider.Log.WriteLine($"Query completed in {stopwatch.ElapsedMilliseconds}ms ({stopwatch.ElapsedTicks} ticks)");					
 					return result;
 				}
 				catch (Exception ex)
 				{
 					stopwatch.Stop();
 					_provider.Log.WriteLine($"Query FAILED after {stopwatch.ElapsedMilliseconds}ms: {ex.Message}");
-					_provider.Log.WriteLine(new string('-', 50));
 					throw;
 				}
 			}
