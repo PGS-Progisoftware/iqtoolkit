@@ -38,6 +38,12 @@ namespace IQToolkit.Data.Advantage
 						// Extract the constant value from the right side
 						var constantValue = ExtractConstantValue(node.Right);
 
+						// Special handling for null comparisons
+						if (constantValue == null || node.Right.NodeType == ExpressionType.Constant && ((ConstantExpression)node.Right).Value == null)
+						{
+							return BuildNullComparison(node.NodeType, leftMember, dateMember);
+						}
+
 						if (constantValue is DateTime dt)
 						{
 							return BuildCompositeComparison(node.NodeType, leftMember, dateMember, timeMember, dt);
@@ -51,6 +57,13 @@ namespace IQToolkit.Data.Advantage
 					if (IsCompositeField(rightMember.Member, out var dateMember, out var timeMember))
 					{
 						var constantValue = ExtractConstantValue(node.Left);
+						
+						// Special handling for null comparisons (reversed)
+						if (constantValue == null || node.Left.NodeType == ExpressionType.Constant && ((ConstantExpression)node.Left).Value == null)
+						{
+							return BuildNullComparison(node.NodeType, rightMember, dateMember);
+						}
+
 						if (constantValue is DateTime dt)
 						{
 							var reversedOp = ReverseOperator(node.NodeType);

@@ -248,29 +248,34 @@ namespace IQToolkit.Data.Common
             return false;
         }
 
-        public override EntityExpression IncludeMembers(EntityExpression entity, Func<MemberInfo, bool> fnIsIncluded)
-        {
-            var assignments = this.GetAssignments(entity.Expression).ToDictionary(ma => ma.Member.Name);
-            bool anyAdded = false;
-            foreach (var mi in this.mapping.GetMappedMembers(entity.Entity))
-            {
-                EntityAssignment ea;
-                bool okayToInclude = !assignments.TryGetValue(mi.Name, out ea) || IsNullRelationshipAssignment(entity.Entity, ea);
-                if (okayToInclude && fnIsIncluded(mi))
-                {
-                    ea = new EntityAssignment(mi, this.GetMemberExpression(entity.Expression, entity.Entity, mi));
-                    assignments[mi.Name] = ea;
-                    anyAdded = true;
-                }
-            }
-            if (anyAdded)
-            {
-                return new EntityExpression(entity.Entity, this.BuildEntityExpression(entity.Entity, assignments.Values.ToList()));
-            }
-            return entity;
-        }
+		public override EntityExpression IncludeMembers(EntityExpression entity, Func<MemberInfo, bool> fnIsIncluded)
+		{
+			var assignments = this.GetAssignments(entity.Expression)
+                // remove exact duplicates if composite mapping emitted them twice
+                .GroupBy(a => a.Member)
+                .Select(g => g.First())
+                .ToDictionary(a => a.Member);
 
-        private bool IsNullRelationshipAssignment(MappingEntity entity, EntityAssignment assignment)
+			bool anyAdded = false;
+			foreach (var mi in this.mapping.GetMappedMembers(entity.Entity))
+			{
+				EntityAssignment ea;
+				bool okayToInclude = !assignments.TryGetValue(mi, out ea) || IsNullRelationshipAssignment(entity.Entity, ea);
+				if (okayToInclude && fnIsIncluded(mi))
+				{
+					ea = new EntityAssignment(mi, this.GetMemberExpression(entity.Expression, entity.Entity, mi));
+					assignments[mi] = ea;
+					anyAdded = true;
+				}
+			}
+			if (anyAdded)
+			{
+				return new EntityExpression(entity.Entity, this.BuildEntityExpression(entity.Entity, assignments.Values.ToList()));
+			}
+			return entity;
+		}
+
+		private bool IsNullRelationshipAssignment(MappingEntity entity, EntityAssignment assignment)
         {
             if (this.mapping.IsRelationship(entity, assignment.Member))
             {

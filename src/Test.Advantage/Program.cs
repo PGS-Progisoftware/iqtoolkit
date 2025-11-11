@@ -1,17 +1,75 @@
-﻿using IQToolkit.Data.Advantage;
+﻿using IQToolkit.Data;
+using IQToolkit.Data.Advantage;
 using IQToolkit.Data.Mapping;
+//using PCSLib.Data.DBF;
 using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+//using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq;
 
 namespace Test.Advantage
 {
+
+	public enum LocGenStatut
+	{
+		/// <summary>
+		/// Devis
+		/// </summary>
+		Devis = '0',
+		/// <summary>
+		/// Reservation
+		/// </summary>
+		Reservation = '1',
+		/// <summary>
+		/// Location
+		/// </summary>
+		Location = '2',
+		/// <summary>
+		/// Retour
+		/// </summary>
+		Retour = '3',
+		/// <summary>
+		/// Retour controle
+		/// </summary>
+		RetourControle = '4',
+		/// <summary>
+		/// Annulation
+		/// </summary>
+		Annulation = '9',
+		Annulation2 = 'A'
+	}
+
+	[Table(Name = "LocDet")]
+	public class LocDet
+	{
+		[MaxLength(9)]
+		[Column(DbType = "Char(9)")]
+		public string NUMLOC { get; set; }
+
+		[MaxLength(15)]
+		[Column(DbType = "Char(15)")]
+		public string CODEART { get; set; }
+	}
+
 	/// <summary>
 	/// Test entity mapping for LocGen table.
 	/// </summary>
+	[Table(Name = "LocGen")]
 	public class LocGen
 	{
+		[IQToolkit.Data.Mapping.Association(KeyMembers = "NUMLOC")]
+		public List<LocDet> Articles { get; set; }
+
 		[Column(DbType = "CHAR(9)", IsPrimaryKey = true)]
 		public string NUMLOC { get; set; }
+
+		[Column(DbType = "CHAR(1)")]
+		public LocGenStatut? STATUT { get; set; }
+
+		[Column(DbType = "CHAR(1)")]
+		public string STATUT2 { get; set; }
+
 
 		[Column(DbType = "CHAR(10)")]
 		public string CODECLT { get; set; }
@@ -21,7 +79,6 @@ namespace Test.Advantage
 		public DateTime DATEFIN { get; set; }
 		public DateTime DATERET { get; set; }
 		public DateTime DATELOC { get; set; }
-		//public char? STATUT { get; set; }
 		//public char? STATUT2 { get; set; }
 		public decimal TOTALHT { get; set; }
 		public string AFFAIRE { get; set; }
@@ -42,6 +99,7 @@ namespace Test.Advantage
 
 		// Composite DateTime fields - combine date + time columns into single DateTime for queries
 		private DateTime? _dtdep;
+		[System.ComponentModel.DataAnnotations.Schema.NotMapped]
 		[CompositeField(DateMember = nameof(DATEDEP), TimeMember = nameof(HEUREDEP))]
 		public DateTime DTDEP
 		{
@@ -65,8 +123,8 @@ namespace Test.Advantage
 			}
 		}
 
-		[CompositeField(DateMember = nameof(DATEMAJ), TimeMember = nameof(HEUREMAJ))]
-		public DateTime DTMAJ { get; set; }
+		//[CompositeField(DateMember = nameof(DATEMAJ), TimeMember = nameof(HEUREMAJ))]
+		//public DateTime DTMAJ { get; set; }
 
 		//// Relations
 		//[Association(KeyMembers = "CODECLT")]
@@ -76,106 +134,59 @@ namespace Test.Advantage
 		//public LocPer Per1 { get; set; }
 	}
 
-	public class LocClt
-	{
-		[Column(DbType = "CHAR(10)", IsPrimaryKey = true)]
-		public string CODECLT { get; set; }
-
-		public string Nom { get; set; }
-	}
-
-	public class LocPer
-	{
-		public string CODECLT { get; set; }
-		public string CODEPER { get; set; }
-		public string Nom { get; set; }
-		public string Prenom { get; set; }
-	}
-
-	[Table(Name = "LocStgen")]
-	public class LocStGen
-	{
-		public string NUMLOC { get; set; }
-	}
-
 	class Program
 	{
 		static void Main(string[] args)
 		{
 			string connectionString = "Data Source=C:\\PGS\\LOCA RECEPTION\\DATA\\LYON;ServerType=remote;TableType=CDX;TrimTrailingSpaces=True;CharType=OEM";
+			//string connectionString = "Data Source=C:\\PGS\\Mini\\Data;ServerType=remote;TableType=CDX;TrimTrailingSpaces=True;CharType=OEM";
 
-			var provider = AdvantageQueryProvider.Create(connectionString);
+			var policy = new EntityPolicy();
+			var provider = AdvantageQueryProvider.Create(connectionString, policy);
 			provider.Log = Console.Out;
 			provider.EnableQueryTiming = false;
 
-			Test1_SimpleQuery(provider);
-			//Test2_StringCompare(provider);
-			//Test3_CompositeField(provider);
+			policy.IncludeWith<LocGen>(l => l.Articles);
+
+			var query = provider.GetTable<LocGen>()
+				//.Where(lg=>lg.Articles.Count > 5)
+				.Where(lg => lg.DTDEP != null)
+				.Take(1)
+				.ToList();
+
+
+
+			//provider.GetTable<LocGen>().InsertOrUpdate(new LocGen
+			//{
+			//	NUMLOC = "TEST00001",
+			//	STATUT = null
+			//});
+
+			//var res = provider.GetTable<LocGen>()
+			//	//.Where(lg => lg.STATUT == LocGenStatut.Retour)
+			//	.ToList();
+
+			//foreach (var lg in res)
+			//{
+			//	if (lg.STATUT.HasValue)
+			//	{
+			//		Console.WriteLine($"NUMLOC: {lg.NUMLOC}, STATUT: [{((char)lg.STATUT.Value)}], Enum: {lg.STATUT.Value}, Int: {(int)lg.STATUT.Value}");
+			//	}
+			//	else
+			//	{
+			//		Console.WriteLine($"NUMLOC: {lg.NUMLOC}, STATUT: [NULL]");
+			//	}
+			//}
+
+
+			////provider.GetTable<LocGen>().InsertOrUpdate(new LocGen
+			////{
+			////	NUMLOC = "TEST00002",
+			////	STATUT = LocGenStatut.RetourControle
+			////});
 
 			Console.WriteLine("\nAll tests completed. Press any key to exit...");
 			Console.ReadKey();
-		}
-
-		static void Test1_SimpleQuery(AdvantageQueryProvider provider)
-		{
-			Console.WriteLine("=== TEST 1: Simple Query with Composite Field ===");
-			try
-			{
-				var query = provider.GetTable<LocGen>()
-					.Where(lg => lg.DTDEP > DateTime.Now.AddYears(-3))
-					.Select(lg => new { dt = lg.DTDEP, id = lg.NUMLOC });
-					
-					
-
-				//Console.WriteLine("SQL: " + provider.GetQueryText(query.Expression));
-				var result = query.ToList();
-				Console.WriteLine($"✅ SUCCESS: {result} result(s)\n");
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"❌ FAILED: {ex.Message}\n");
-			}
-		}
-
-		static void Test2_StringCompare(AdvantageQueryProvider provider)
-		{
-			Console.WriteLine("=== TEST 2: String.Compare ===");
-			try
-			{
-				var query = provider.GetTable<LocGen>()
-					.Where(lg => string.Compare(lg.HEUREDEP, "12:00") < 0)
-					.Select(lg => lg.NUMLOC);
-
-				Console.WriteLine("SQL: " + provider.GetQueryText(query.Expression));
-				var result = query.ToList();
-				Console.WriteLine($"✅ SUCCESS: {result.Count} result(s)\n");
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"❌ FAILED: {ex.Message}\n");
-			}
-		}
-
-		static void Test3_CompositeField(AdvantageQueryProvider provider)
-		{
-			Console.WriteLine("=== TEST 3: Composite Field with Specific DateTime ===");
-			try
-			{
-				var cutoffDate = new DateTime(2024, 6, 28, 13, 33, 0);
-
-				var query = provider.GetTable<LocGen>()
-					.Where(lg => lg.DTDEP > cutoffDate)
-					.Select(lg => lg.NUMLOC)
-					.Take(1);
-
-				Console.WriteLine("SQL: " + provider.GetQueryText(query.Expression));
-				var result = query.ToList();
-				Console.WriteLine($"✅ SUCCESS: {result.Count} result(s)\n");
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"❌ FAILED: {ex.Message}\n");
-			}
 		}
 	}
 

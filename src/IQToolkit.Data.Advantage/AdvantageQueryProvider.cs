@@ -1,11 +1,9 @@
+using IQToolkit.Data.Common;
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Data.Common;
 using System.Diagnostics;
-using System.IO;
-using IQToolkit.Data;
-using IQToolkit.Data.Common;
-using IQToolkit.Data.Mapping;
 
 namespace IQToolkit.Data.Advantage
 {
@@ -18,9 +16,9 @@ namespace IQToolkit.Data.Advantage
         /// <summary>
         /// Creates a new AdvantageQueryProvider with the specified connection string.
         /// </summary>
-        public static AdvantageQueryProvider Create(string connectionString)
+        public static AdvantageQueryProvider Create(string connectionString, QueryPolicy policy = null)
         {
-            return new AdvantageQueryProvider(connectionString);
+            return new AdvantageQueryProvider(connectionString, policy);
         }
 
         #endregion
@@ -67,13 +65,20 @@ namespace IQToolkit.Data.Advantage
                 _provider = provider;
             }
 
-            protected override void AddParameter(DbCommand command, QueryParameter parameter, object value)
-            {
-                var p = command.CreateParameter();
-                p.ParameterName = parameter.Name;
-                p.Value = value ?? System.DBNull.Value;
-                command.Parameters.Add(p);
-            }
+			//TODO : config switch
+			public override object Convert(object value, Type type)
+			{
+				bool isNullableType = TypeHelper.IsNullableType(type);
+
+				// Treat empty/whitespace strings as null for nullable types
+				if (value is string str && string.IsNullOrWhiteSpace(str))
+				{
+					return DBNull.Value;
+				}
+
+				return base.Convert(value, type);
+			}
+
 
 			protected override DbCommand GetCommand(QueryCommand query, object[] paramValues)
 			{
@@ -119,6 +124,55 @@ namespace IQToolkit.Data.Advantage
 					throw;
 				}
 			}
-        }
-    }
+
+			protected override IEnumerable<T> Project<T>(DbDataReader reader, Func<FieldReader, T> fnProjector, MappingEntity entity, bool closeReader)
+			{
+				var freader = new AdvantageFieldReader(this, reader);
+				try
+				{
+					while (reader.Read())
+					{
+						yield return fnProjector(freader);
+					}
+				}
+				finally
+				{
+					if (closeReader)
+					{
+						((IDataReader)reader).Close();
+					}
+				}
+			}
+		}
+
+		private class AdvantageFieldReader : DbFieldReader
+		{
+			public AdvantageFieldReader(Executor executor, DbDataReader reader)
+				: base(executor, reader)
+			{
+			}
+
+
+			protected override bool IsDBNull(int ordinal)
+			{
+				if (base.IsDBNull(ordinal))
+				{
+					return true;
+				}
+
+				if (this.GetFieldType(ordinal) == typeof(string))
+				{
+					var value = this.GetString(ordinal);
+					if (value is string str && string.IsNullOrWhiteSpace(str))
+					{
+						return true;
+					}
+				}
+
+				return base.IsDBNull(ordinal);
+			}
+
+		
+		}
+	}
 }

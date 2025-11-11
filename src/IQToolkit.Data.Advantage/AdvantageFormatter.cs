@@ -1,7 +1,6 @@
 using IQToolkit.Data.Common;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Linq.Expressions;
 
 namespace IQToolkit.Data.Advantage
@@ -9,8 +8,6 @@ namespace IQToolkit.Data.Advantage
 	public class AdvantageFormatter : SqlFormatter
 	{
 		public AdvantageFormatter(QueryLanguage language) : base(language) { }
-
-		private AdvantageLanguage AdvantageLanguage => this.Language as AdvantageLanguage;
 
 		protected override void WriteParameterName(string name)
 		{
@@ -23,6 +20,99 @@ namespace IQToolkit.Data.Advantage
 			var formatter = new AdvantageFormatter(language);
 			formatter.Visit(expression);
 			return formatter.ToString();
+		}
+
+		protected override Expression VisitBinary(BinaryExpression b)
+		{
+			// For equality/inequality comparisons, check if we're comparing with an enum column
+			if (b.NodeType == ExpressionType.Equal || b.NodeType == ExpressionType.NotEqual)
+			{
+				// Unwrap any Convert expressions to get to the actual column or constant
+				Expression left = b.Left;
+				Expression right = b.Right;
+				
+				while (left.NodeType == ExpressionType.Convert || left.NodeType == ExpressionType.ConvertChecked)
+				{
+					left = ((UnaryExpression)left).Operand;
+				}
+				
+				while (right.NodeType == ExpressionType.Convert || right.NodeType == ExpressionType.ConvertChecked)
+				{
+					right = ((UnaryExpression)right).Operand;
+				}
+
+				var leftColumn = left as ColumnExpression;
+				var rightColumn = right as ColumnExpression;
+				var leftConst = left as ConstantExpression;
+				var rightConst = right as ConstantExpression;
+
+				// Determine which side is the column and which is the constant
+				ColumnExpression enumColumn = null;
+				ConstantExpression constValue = null;
+
+				if (leftColumn != null && IsCharColumn(leftColumn) && rightConst != null)
+				{
+					enumColumn = leftColumn;
+					constValue = rightConst;
+				}
+				else if (rightColumn != null && IsCharColumn(rightColumn) && leftConst != null)
+				{
+					enumColumn = rightColumn;
+					constValue = leftConst;
+				}
+
+				if (enumColumn != null && constValue != null && constValue.Value != null)
+				{
+					// We have a CHAR(1) column being compared to a constant
+					// Check if the constant is an integer (likely a converted enum)
+					if (constValue.Value is int intValue)
+					{
+						// Convert to char and write the comparison directly
+						char charValue = (char)intValue;
+						
+						this.Visit(b.Left);  // Use original left side to preserve any Convert
+						this.Write(b.NodeType == ExpressionType.Equal ? " = " : " <> ");
+						this.Write("'");
+						this.Write(charValue.ToString());
+						this.Write("'");
+						
+						return b;
+					}
+				}
+			}
+
+			return base.VisitBinary(b);
+		}
+
+		private bool IsCharColumn(ColumnExpression column)
+		{
+			// Check if this column is mapped as CHAR(1)
+			if (column.QueryType is SqlQueryType sqlType)
+			{
+				// Check if it's a CHAR type with length 1 (indicating an enum)
+				if (sqlType.SqlType == SqlType.Char && sqlType.Length == 1)
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		protected override Expression VisitConstant(ConstantExpression c)
+		{
+			if (c.Value != null && c.Type.IsEnum)
+			{
+				// Convert enum to its ASCII character representation
+				int enumIntValue = (int)c.Value;
+				char enumChar = (char)enumIntValue;
+
+				this.Write("'");
+				this.Write(enumChar.ToString());
+				this.Write("'");
+				return c;
+			}
+
+			return base.VisitConstant(c);
 		}
 
 		protected override void WriteColumnName(string name)
