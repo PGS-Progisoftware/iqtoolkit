@@ -40,6 +40,17 @@ namespace IQToolkit.Data.Advantage
             {
             }
 
+            public override Expression Translate(Expression expression)
+            {
+                // First, rewrite composite fields BEFORE any other translation
+                // This ensures that by the time QueryBinder runs, all composite field 
+                // references have been replaced with their underlying date/time field references
+                expression = AdvantageCompositeFieldRewriter.Rewrite(expression);
+                
+                // Then proceed with normal translation (binding, optimization, etc.)
+                return base.Translate(expression);
+            }
+
             public override string Format(Expression expression)
             {
                 // Use the custom AdvantageFormatter to ensure positional parameters
