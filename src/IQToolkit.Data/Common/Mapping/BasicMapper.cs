@@ -311,287 +311,372 @@ namespace IQToolkit.Data.Common
 
         public override Expression GetMemberExpression(Expression root, MappingEntity entity, MemberInfo member)
         {
-            if (this.mapping.IsAssociationRelationship(entity, member))
-            {
-                MappingEntity relatedEntity = this.mapping.GetRelatedEntity(entity, member);
-                ProjectionExpression projection = this.GetQueryExpression(relatedEntity);
+  if (this.mapping.IsAssociationRelationship(entity, member))
+        {
+    MappingEntity relatedEntity = this.mapping.GetRelatedEntity(entity, member);
+           ProjectionExpression projection = this.GetQueryExpression(relatedEntity);
 
-                // make where clause for joining back to 'root'
-                var declaredTypeMembers = this.mapping.GetAssociationKeyMembers(entity, member).ToList();
+             // Build WHERE clause for joining back to 'root'
+          var declaredTypeMembers = this.mapping.GetAssociationKeyMembers(entity, member).ToList();
                 var associatedMembers = this.mapping.GetAssociationRelatedKeyMembers(entity, member).ToList();
 
-                Expression where = null;
-                for (int i = 0, n = associatedMembers.Count; i < n; i++)
-                {
-                    Expression equal =
-                        this.GetMemberExpression(projection.Projector, relatedEntity, associatedMembers[i]).Equal(
-                            this.GetMemberExpression(root, entity, declaredTypeMembers[i])
-                        );
-                    where = (where != null) ? where.And(equal) : equal;
-                }
+          Expression where = null;
+    for (int i = 0, n = associatedMembers.Count; i < n; i++)
+   {
+          Expression equal =
+         this.GetMemberExpression(projection.Projector, relatedEntity, associatedMembers[i]).Equal(
+   this.GetMemberExpression(root, entity, declaredTypeMembers[i])
+           );
+       where = (where != null) ? where.And(equal) : equal;
+          }
+
+                // Apply association filter from policy if present
+     var policy = this.translator.Police.Policy as EntityPolicy;
+              if (policy != null)
+           {
+         var filter = policy.GetAssociationFilter(member);
+      if (filter != null)
+          {
+        // Convert filter lambda to column expressions with proper table alias
+         var filterParam = filter.Parameters[0];
+          var filterCondition = MemberToColumnRewriter.Rewrite(
+   filter.Body, 
+               filterParam, 
+   projection.Select.Alias, 
+   relatedEntity, 
+     this);
+    
+            // Add filter to WHERE clause (becomes part of JOIN ON condition)
+                 where = (where != null) ? where.And(filterCondition) : filterCondition;
+   }
+       }
 
                 TableAlias newAlias = new TableAlias();
-                var pc = ColumnProjector.ProjectColumns(this.translator.Linguist.Language, projection.Projector, null, newAlias, projection.Select.Alias);
+         var pc = ColumnProjector.ProjectColumns(
+      this.translator.Linguist.Language, 
+              projection.Projector, 
+         null, 
+ newAlias, 
+            projection.Select.Alias);
 
-                LambdaExpression aggregator = Aggregator.GetAggregator(TypeHelper.GetMemberType(member), typeof(IEnumerable<>).MakeGenericType(pc.Projector.Type));
-                var result = new ProjectionExpression(
-                    new SelectExpression(newAlias, pc.Columns, projection.Select, where),
-                    pc.Projector, aggregator
-                    );
+         LambdaExpression aggregator = Aggregator.GetAggregator(
+          TypeHelper.GetMemberType(member), 
+             typeof(IEnumerable<>).MakeGenericType(pc.Projector.Type));
+            
+             var result = new ProjectionExpression(
+     new SelectExpression(newAlias, pc.Columns, projection.Select, where),
+    pc.Projector, 
+          aggregator
+             );
 
-                return this.translator.Police.ApplyPolicy(result, member);
+            return this.translator.Police.ApplyPolicy(result, member);
             }
-            else
+         else
             {
-                AliasedExpression aliasedRoot = root as AliasedExpression;
-                if (aliasedRoot != null && this.mapping.IsColumn(entity, member))
-                {
-                    return new ColumnExpression(TypeHelper.GetMemberType(member), this.GetColumnType(entity, member), aliasedRoot.Alias, this.mapping.GetColumnName(entity, member));
-                }
-                return QueryBinder.BindMember(root, member);
+            AliasedExpression aliasedRoot = root as AliasedExpression;
+     if (aliasedRoot != null && this.mapping.IsColumn(entity, member))
+            {
+         return new ColumnExpression(
+      TypeHelper.GetMemberType(member), 
+        this.GetColumnType(entity, member), 
+           aliasedRoot.Alias, 
+       this.mapping.GetColumnName(entity, member));
+ }
+      return QueryBinder.BindMember(root, member);
             }
         }
+
+        /// <summary>
+ /// Rewrites member access expressions in a filter lambda to column expressions with the correct table alias.
+  /// This ensures filter conditions reference the proper SQL table columns in JOIN conditions.
+        /// </summary>
+        private class MemberToColumnRewriter : DbExpressionVisitor
+        {
+      private readonly ParameterExpression parameter;
+   private readonly TableAlias alias;
+          private readonly MappingEntity entity;
+            private readonly BasicMapper mapper;
+
+            private MemberToColumnRewriter(
+                ParameterExpression parameter, 
+          TableAlias alias, 
+         MappingEntity entity, 
+    BasicMapper mapper)
+         {
+    this.parameter = parameter;
+     this.alias = alias;
+  this.entity = entity;
+       this.mapper = mapper;
+   }
+
+      public static Expression Rewrite(
+          Expression expression, 
+     ParameterExpression parameter, 
+                TableAlias alias, 
+                MappingEntity entity, 
+       BasicMapper mapper)
+         {
+                return new MemberToColumnRewriter(parameter, alias, entity, mapper).Visit(expression);
+     }
+
+            protected override Expression VisitMemberAccess(MemberExpression m)
+{
+     // Convert member access on filter parameter to ColumnExpression
+          if (m.Expression == this.parameter)
+    {
+         if (this.mapper.mapping.IsColumn(this.entity, m.Member))
+          {
+    var columnName = this.mapper.mapping.GetColumnName(this.entity, m.Member);
+      var columnType = this.mapper.GetColumnType(this.entity, m.Member);
+                return new ColumnExpression(
+                   TypeHelper.GetMemberType(m.Member), 
+  columnType, 
+        this.alias, 
+         columnName);
+ }
+}
+  return base.VisitMemberAccess(m);
+     }
+   }
 
         public override Expression GetInsertExpression(MappingEntity entity, Expression instance, LambdaExpression selector)
         {
-            var tableAlias = new TableAlias();
-            var table = new TableExpression(tableAlias, entity, this.mapping.GetTableName(entity));
-            var assignments = this.GetColumnAssignments(table, instance, entity, (e, m) => !(mapping.IsGenerated(e, m) || mapping.IsReadOnly(e, m)));   // #MLCHANGE
+         var tableAlias = new TableAlias();
+   var table = new TableExpression(tableAlias, entity, this.mapping.GetTableName(entity));
+ var assignments = this.GetColumnAssignments(table, instance, entity, (e, m) => !(mapping.IsGenerated(e, m) || mapping.IsReadOnly(e, m)));
 
             if (selector != null)
-            {
-                return new BlockCommand(
-                    new InsertCommand(table, assignments),
-                    this.GetInsertResult(entity, instance, selector, null)
-                    );
+        {
+    return new BlockCommand(
+            new InsertCommand(table, assignments),
+ this.GetInsertResult(entity, instance, selector, null)
+      );
             }
 
-            return new InsertCommand(table, assignments);
+      return new InsertCommand(table, assignments);
         }
 
         private IEnumerable<ColumnAssignment> GetColumnAssignments(Expression table, Expression instance, MappingEntity entity, Func<MappingEntity, MemberInfo, bool> fnIncludeColumn)
-        {
+    {
             foreach (var m in this.mapping.GetMappedMembers(entity))
-            {
-                if (this.mapping.IsColumn(entity, m) && fnIncludeColumn(entity, m))
-                {
-                    yield return new ColumnAssignment(
-                        (ColumnExpression)this.GetMemberExpression(table, entity, m),
-                        Expression.MakeMemberAccess(instance, m)
-                        );
-                }
-            }
+          {
+ if (this.mapping.IsColumn(entity, m) && fnIncludeColumn(entity, m))
+     {
+         yield return new ColumnAssignment(
+         (ColumnExpression)this.GetMemberExpression(table, entity, m),
+       Expression.MakeMemberAccess(instance, m)
+          );
+        }
+     }
         }
 
         protected virtual Expression GetInsertResult(MappingEntity entity, Expression instance, LambdaExpression selector, Dictionary<MemberInfo, Expression> map)
-        {
+      {
             var tableAlias = new TableAlias();
-            var tex = new TableExpression(tableAlias, entity, this.mapping.GetTableName(entity));
-            var aggregator = Aggregator.GetAggregator(selector.Body.Type, typeof(IEnumerable<>).MakeGenericType(selector.Body.Type));
+     var tex = new TableExpression(tableAlias, entity, this.mapping.GetTableName(entity));
+  var aggregator = Aggregator.GetAggregator(selector.Body.Type, typeof(IEnumerable<>).MakeGenericType(selector.Body.Type));
 
-            Expression where;
-            DeclarationCommand genIdCommand = null;
-            var generatedIds = this.mapping.GetMappedMembers(entity).Where(m => this.mapping.IsPrimaryKey(entity, m) && this.mapping.IsGenerated(entity, m)).ToList();
-            if (generatedIds.Count > 0)
+       Expression where;
+     DeclarationCommand genIdCommand = null;
+     var generatedIds = this.mapping.GetMappedMembers(entity).Where(m => this.mapping.IsPrimaryKey(entity, m) && this.mapping.IsGenerated(entity, m)).ToList();
+         if (generatedIds.Count > 0)
             {
-                if (map == null || !generatedIds.Any(m => map.ContainsKey(m)))
-                {
-                    var localMap = new Dictionary<MemberInfo, Expression>();
-                    genIdCommand = this.GetGeneratedIdCommand(entity, generatedIds.ToList(), localMap);
-                    map = localMap;
-                }
+           if (map == null || !generatedIds.Any(m => map.ContainsKey(m)))
+    {
+              var localMap = new Dictionary<MemberInfo, Expression>();
+        genIdCommand = this.GetGeneratedIdCommand(entity, generatedIds.ToList(), localMap);
+               map = localMap;
+      }
 
-                // is this just a retrieval of one generated id member?
-                var mex = selector.Body as MemberExpression;
-                if (mex != null && this.mapping.IsPrimaryKey(entity, mex.Member) && this.mapping.IsGenerated(entity, mex.Member))
-                {
-                    if (genIdCommand != null)
-                    {
-                        // just use the select from the genIdCommand
-                        return new ProjectionExpression(
-                            genIdCommand.Source,
-                            new ColumnExpression(mex.Type, genIdCommand.Variables[0].QueryType, genIdCommand.Source.Alias, genIdCommand.Source.Columns[0].Name),
-                            aggregator
-                            );
-                    }
-                    else
-                    {
-                        TableAlias alias = new TableAlias();
-                        var colType = this.GetColumnType(entity, mex.Member);
-                        return new ProjectionExpression(
-                            new SelectExpression(alias, new[] { new ColumnDeclaration("", map[mex.Member], colType) }, null, null),
-                            new ColumnExpression(TypeHelper.GetMemberType(mex.Member), colType, alias, ""),
-                            aggregator
-                            );
-                    }
-                }
+   var mex = selector.Body as MemberExpression;
+       if (mex != null && this.mapping.IsPrimaryKey(entity, mex.Member) && this.mapping.IsGenerated(entity, mex.Member))
+     {
+  if (genIdCommand != null)
+            {
+         return new ProjectionExpression(
+           genIdCommand.Source,
+         new ColumnExpression(mex.Type, genIdCommand.Variables[0].QueryType, genIdCommand.Source.Alias, genIdCommand.Source.Columns[0].Name),
+           aggregator
+   );
+      }
+          else
+    {
+ TableAlias alias = new TableAlias();
+               var colType = this.GetColumnType(entity, mex.Member);
+          return new ProjectionExpression(
+        new SelectExpression(alias, new[] { new ColumnDeclaration("", map[mex.Member], colType) }, null, null),
+      new ColumnExpression(TypeHelper.GetMemberType(mex.Member), colType, alias, ""),
+aggregator
+      );
+      }
+         }
 
-                where = generatedIds.Select((m, i) =>
-                    this.GetMemberExpression(tex, entity, m).Equal(map[m])
-                    ).Aggregate((x, y) => x.And(y));
-            }
+ where = generatedIds.Select((m, i) =>
+       this.GetMemberExpression(tex, entity, m).Equal(map[m])
+    ).Aggregate((x, y) => x.And(y));
+ }
             else
-            {
-                where = this.GetIdentityCheck(tex, entity, instance);
+       {
+     where = this.GetIdentityCheck(tex, entity, instance);
             }
 
-            Expression typeProjector = this.GetEntityExpression(tex, entity);
-            Expression selection = DbExpressionReplacer.Replace(selector.Body, selector.Parameters[0], typeProjector);
-            TableAlias newAlias = new TableAlias();
-            var pc = ColumnProjector.ProjectColumns(this.translator.Linguist.Language, selection, null, newAlias, tableAlias);
-            var pe = new ProjectionExpression(
-                new SelectExpression(newAlias, pc.Columns, tex, where),
-                pc.Projector,
-                aggregator
-                );
+    Expression typeProjector = this.GetEntityExpression(tex, entity);
+   Expression selection = DbExpressionReplacer.Replace(selector.Body, selector.Parameters[0], typeProjector);
+          TableAlias newAlias = new TableAlias();
+   var pc = ColumnProjector.ProjectColumns(this.translator.Linguist.Language, selection, null, newAlias, tableAlias);
+    var pe = new ProjectionExpression(
+new SelectExpression(newAlias, pc.Columns, tex, where),
+      pc.Projector,
+           aggregator
+       );
 
-            if (genIdCommand != null)
+        if (genIdCommand != null)
             {
-                return new BlockCommand(genIdCommand, pe);
-            }
-            return pe;
+ return new BlockCommand(genIdCommand, pe);
         }
+            return pe;
+  }
 
         protected virtual DeclarationCommand GetGeneratedIdCommand(MappingEntity entity, List<MemberInfo> members, Dictionary<MemberInfo, Expression> map)
         {
-            var columns = new List<ColumnDeclaration>();
+      var columns = new List<ColumnDeclaration>();
             var decls = new List<VariableDeclaration>();
             var alias = new TableAlias();
-            foreach (var member in members)
+     foreach (var member in members)
             {
-                Expression genId = this.translator.Linguist.Language.GetGeneratedIdExpression(member);
-                var name = member.Name;
-                var colType = this.GetColumnType(entity, member);
-                columns.Add(new ColumnDeclaration(member.Name, genId, colType));
-                decls.Add(new VariableDeclaration(member.Name, colType, new ColumnExpression(genId.Type, colType, alias, member.Name)));
-                if (map != null)
-                {
-                    var vex = new VariableExpression(member.Name, TypeHelper.GetMemberType(member), colType);
-                    map.Add(member, vex);
-                }
-            }
-            var select = new SelectExpression(alias, columns, null, null);
+        Expression genId = this.translator.Linguist.Language.GetGeneratedIdExpression(member);
+    var name = member.Name;
+     var colType = this.GetColumnType(entity, member);
+         columns.Add(new ColumnDeclaration(member.Name, genId, colType));
+      decls.Add(new VariableDeclaration(member.Name, colType, new ColumnExpression(genId.Type, colType, alias, member.Name)));
+      if (map != null)
+  {
+           var vex = new VariableExpression(member.Name, TypeHelper.GetMemberType(member), colType);
+   map.Add(member, vex);
+         }
+         }
+        var select = new SelectExpression(alias, columns, null, null);
             return new DeclarationCommand(decls, select);
         }
 
         protected virtual Expression GetIdentityCheck(Expression root, MappingEntity entity, Expression instance)
         {
-            return this.mapping.GetMappedMembers(entity)
-            .Where(m => this.mapping.IsPrimaryKey(entity, m))
-            .Select(m => this.GetMemberExpression(root, entity, m).Equal(Expression.MakeMemberAccess(instance, m)))
-            .Aggregate((x, y) => x.And(y));
+    return this.mapping.GetMappedMembers(entity)
+      .Where(m => this.mapping.IsPrimaryKey(entity, m))
+       .Select(m => this.GetMemberExpression(root, entity, m).Equal(Expression.MakeMemberAccess(instance, m)))
+  .Aggregate((x, y) => x.And(y));
         }
 
-        protected virtual Expression GetEntityExistsTest(MappingEntity entity, Expression instance)
+   protected virtual Expression GetEntityExistsTest(MappingEntity entity, Expression instance)
         {
             ProjectionExpression tq = this.GetQueryExpression(entity);
             Expression where = this.GetIdentityCheck(tq.Select, entity, instance);
             return new ExistsExpression(new SelectExpression(new TableAlias(), null, tq.Select, where));
+}
+
+ protected virtual Expression GetEntityStateTest(MappingEntity entity, Expression instance, LambdaExpression updateCheck)
+      {
+    ProjectionExpression tq = this.GetQueryExpression(entity);
+         Expression where = this.GetIdentityCheck(tq.Select, entity, instance);
+        Expression check = DbExpressionReplacer.Replace(updateCheck.Body, updateCheck.Parameters[0], tq.Projector);
+     where = where.And(check);
+    return new ExistsExpression(new SelectExpression(new TableAlias(), null, tq.Select, where));
         }
 
-        protected virtual Expression GetEntityStateTest(MappingEntity entity, Expression instance, LambdaExpression updateCheck)
-        {
-            ProjectionExpression tq = this.GetQueryExpression(entity);
-            Expression where = this.GetIdentityCheck(tq.Select, entity, instance);
-            Expression check = DbExpressionReplacer.Replace(updateCheck.Body, updateCheck.Parameters[0], tq.Projector);
-            where = where.And(check);
-            return new ExistsExpression(new SelectExpression(new TableAlias(), null, tq.Select, where));
-        }
+    public override Expression GetUpdateExpression(MappingEntity entity, Expression instance, LambdaExpression updateCheck, LambdaExpression selector, Expression @else)
+      {
+       var tableAlias = new TableAlias();
+          var table = new TableExpression(tableAlias, entity, this.mapping.GetTableName(entity));
 
-        public override Expression GetUpdateExpression(MappingEntity entity, Expression instance, LambdaExpression updateCheck, LambdaExpression selector, Expression @else)
-        {
-            var tableAlias = new TableAlias();
-            var table = new TableExpression(tableAlias, entity, this.mapping.GetTableName(entity));
-
-            var where = this.GetIdentityCheck(table, entity, instance);
-            if (updateCheck != null)
+        var where = this.GetIdentityCheck(table, entity, instance);
+if (updateCheck != null)
             {
-                Expression typeProjector = this.GetEntityExpression(table, entity);
-                Expression pred = DbExpressionReplacer.Replace(updateCheck.Body, updateCheck.Parameters[0], typeProjector);
-                where = where.And(pred);
-            }
+          Expression typeProjector = this.GetEntityExpression(table, entity);
+   Expression pred = DbExpressionReplacer.Replace(updateCheck.Body, updateCheck.Parameters[0], typeProjector);
+      where = where.And(pred);
+      }
 
-            var assignments = this.GetColumnAssignments(table, instance, entity, (e, m) => this.mapping.IsUpdatable(e, m));
+   var assignments = this.GetColumnAssignments(table, instance, entity, (e, m) => this.mapping.IsUpdatable(e, m));
 
             Expression update = new UpdateCommand(table, where, assignments);
 
-            if (selector != null)
+      if (selector != null)
             {
-                return new BlockCommand(
-                    update,
-                    new IFCommand(
-                        this.translator.Linguist.Language.GetRowsAffectedExpression(update).GreaterThan(Expression.Constant(0)),
-                        this.GetUpdateResult(entity, instance, selector),
-                        @else
-                        )
-                    );
-            }
-            else if (@else != null)
-            {
-                return new BlockCommand(
-                    update,
-                    new IFCommand(
-                        this.translator.Linguist.Language.GetRowsAffectedExpression(update).LessThanOrEqual(Expression.Constant(0)),
-                        @else,
-                        null
-                        )
-                    );
-            }
-            else
-            {
-                return update;
-            }
+return new BlockCommand(
+          update,
+       new IFCommand(
+          this.translator.Linguist.Language.GetRowsAffectedExpression(update).GreaterThan(Expression.Constant(0)),
+         this.GetUpdateResult(entity, instance, selector),
+               @else
+)
+        );
+    }
+  else if (@else != null)
+   {
+            return new BlockCommand(
+   update,
+     new IFCommand(
+        this.translator.Linguist.Language.GetRowsAffectedExpression(update).LessThanOrEqual(Expression.Constant(0)),
+     @else,
+   null
+  )
+         );
+    }
+      else
+        {
+         return update;
+ }
         }
 
         protected virtual Expression GetUpdateResult(MappingEntity entity, Expression instance, LambdaExpression selector)
-        {
-            var tq = this.GetQueryExpression(entity);
-            Expression where = this.GetIdentityCheck(tq.Select, entity, instance);
+ {
+   var tq = this.GetQueryExpression(entity);
+          Expression where = this.GetIdentityCheck(tq.Select, entity, instance);
             Expression selection = DbExpressionReplacer.Replace(selector.Body, selector.Parameters[0], tq.Projector);
             TableAlias newAlias = new TableAlias();
-            var pc = ColumnProjector.ProjectColumns(this.translator.Linguist.Language, selection, null, newAlias, tq.Select.Alias);
+        var pc = ColumnProjector.ProjectColumns(this.translator.Linguist.Language, selection, null, newAlias, tq.Select.Alias);
             return new ProjectionExpression(
-                new SelectExpression(newAlias, pc.Columns, tq.Select, where),
-                pc.Projector,
-                Aggregator.GetAggregator(selector.Body.Type, typeof(IEnumerable<>).MakeGenericType(selector.Body.Type))
-                );
-        }
+    new SelectExpression(newAlias, pc.Columns, tq.Select, where),
+  pc.Projector,
+    Aggregator.GetAggregator(selector.Body.Type, typeof(IEnumerable<>).MakeGenericType(selector.Body.Type))
+ );
+   }
 
         public override Expression GetInsertOrUpdateExpression(MappingEntity entity, Expression instance, LambdaExpression updateCheck, LambdaExpression resultSelector)
         {
-            if (updateCheck != null)
-            {
+    if (updateCheck != null)
+ {
                 Expression insert = this.GetInsertExpression(entity, instance, resultSelector);
-                Expression update = this.GetUpdateExpression(entity, instance, updateCheck, resultSelector, null);
-                var check = this.GetEntityExistsTest(entity, instance);
-                return new IFCommand(check, update, insert);
+  Expression update = this.GetUpdateExpression(entity, instance, updateCheck, resultSelector, null);
+   var check = this.GetEntityExistsTest(entity, instance);
+  return new IFCommand(check, update, insert);
             }
-            else
-            {
-                Expression insert = this.GetInsertExpression(entity, instance, resultSelector);
-                Expression update = this.GetUpdateExpression(entity, instance, updateCheck, resultSelector, insert);
-                return update;
-            }
+          else
+       {
+      Expression insert = this.GetInsertExpression(entity, instance, resultSelector);
+     Expression update = this.GetUpdateExpression(entity, instance, updateCheck, resultSelector, insert);
+      return update;
+      }
         }
 
         public override Expression GetDeleteExpression(MappingEntity entity, Expression instance, LambdaExpression deleteCheck)
-        {
+   {
             TableExpression table = new TableExpression(new TableAlias(), entity, this.mapping.GetTableName(entity));
-            Expression where = null;
+      Expression where = null;
 
-            if (instance != null)
+ if (instance != null)
             {
-                where = this.GetIdentityCheck(table, entity, instance);
-            }
+   where = this.GetIdentityCheck(table, entity, instance);
+ }
 
             if (deleteCheck != null)
-            {
-                Expression row = this.GetEntityExpression(table, entity);
-                Expression pred = DbExpressionReplacer.Replace(deleteCheck.Body, deleteCheck.Parameters[0], row);
-                where = (where != null) ? where.And(pred) : pred;
-            }
+  {
+          Expression row = this.GetEntityExpression(table, entity);
+              Expression pred = DbExpressionReplacer.Replace(deleteCheck.Body, deleteCheck.Parameters[0], row);
+   where = (where != null) ? where.And(pred) : pred;
+    }
 
-            return new DeleteCommand(table, where);
-        }
+    return new DeleteCommand(table, where);
+  }
     }
 }
