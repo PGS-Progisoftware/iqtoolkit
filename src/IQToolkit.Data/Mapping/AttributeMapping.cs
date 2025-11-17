@@ -829,37 +829,37 @@ namespace IQToolkit.Data.Mapping
 
         private static readonly char[] separators = new char[] {' ', ',', '|' };
 
-        public override IEnumerable<MemberInfo> GetAssociationKeyMembers(MappingEntity entity, MemberInfo member)
-        {
+public override IEnumerable<MemberInfo> GetAssociationKeyMembers(MappingEntity entity, MemberInfo member)
+  {
             AttributeMappingEntity thisEntity = (AttributeMappingEntity)entity;
-            AttributeMappingMember mm = thisEntity.GetMappingMember(member.Name);
+     AttributeMappingMember mm = thisEntity.GetMappingMember(member.Name);
 
-            if (mm != null && mm.Association != null)
-            {
-                return this.GetReferencedMembers(thisEntity, mm.Association.KeyMembers, "Association.KeyMembers", thisEntity.StaticType);
-            }
+  if (mm != null && mm.Association != null)
+          {
+          return this.GetReferencedMembers(thisEntity, mm.Association.KeyMembers, "Association.KeyMembers", thisEntity.StaticType);
+     }
 
-            return base.GetAssociationKeyMembers(entity, member);
+  return base.GetAssociationKeyMembers(entity, member);
         }
 
         public override IEnumerable<MemberInfo> GetAssociationRelatedKeyMembers(MappingEntity entity, MemberInfo member)
         {
-            AttributeMappingEntity thisEntity = (AttributeMappingEntity)entity;
-            AttributeMappingEntity relatedEntity = (AttributeMappingEntity)this.GetRelatedEntity(entity, member);
-            AttributeMappingMember mm = thisEntity.GetMappingMember(member.Name);
+        AttributeMappingEntity thisEntity = (AttributeMappingEntity)entity;
+AttributeMappingEntity relatedEntity = (AttributeMappingEntity)this.GetRelatedEntity(entity, member);
+ AttributeMappingMember mm = thisEntity.GetMappingMember(member.Name);
 
             if (mm != null && mm.Association != null)
             {
-                return this.GetReferencedMembers(relatedEntity, mm.Association.RelatedKeyMembers ?? mm.Association.KeyMembers, "Association.RelatedKeyMembers", thisEntity.StaticType);
+ return this.GetReferencedMembers(relatedEntity, mm.Association.RelatedKeyMembers ?? mm.Association.KeyMembers, "Association.RelatedKeyMembers", thisEntity.StaticType);
             }
 
             return base.GetAssociationRelatedKeyMembers(entity, member);
         }
 
-        private IEnumerable<MemberInfo> GetReferencedMembers(AttributeMappingEntity entity, string names, string source, Type sourceType)
-        {
-            return names.Split(separators).Select(n => this.GetReferencedMember(entity, n, source, sourceType));
-        }
+ private IEnumerable<MemberInfo> GetReferencedMembers(AttributeMappingEntity entity, string names, string source, Type sourceType)
+  {
+      return names.Split(separators).Select(n => this.GetReferencedMember(entity, n, source, sourceType));
+    }
 
         private MemberInfo GetReferencedMember(AttributeMappingEntity entity, string name, string source, Type sourceType)
         {

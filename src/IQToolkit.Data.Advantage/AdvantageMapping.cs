@@ -96,7 +96,7 @@ namespace IQToolkit.Data.Advantage
 						where = (where != null) ? where.And(equal) : equal;
 					}
 
-					// Apply association filter from AdvantageEntityPolicy if present
+					// First check AdvantageEntityPolicy for programmatic filter
 					var policy = this.Translator.Police.Policy as AdvantageEntityPolicy;
 					if (policy != null)
 					{
@@ -111,6 +111,36 @@ namespace IQToolkit.Data.Advantage
 								projection.Select.Alias,
 								relatedEntity,
 								this);
+
+							// Add filter to WHERE clause (becomes part of JOIN ON condition)
+							where = (where != null) ? where.And(filterCondition) : filterCondition;
+						}
+					}
+
+					// Then check for AssociationFilterAttribute (Advantage-specific)
+					var filterAttr = member.GetCustomAttributes(typeof(AssociationFilterAttribute), true)
+						.Cast<AssociationFilterAttribute>()
+						.FirstOrDefault();
+					
+					if (filterAttr != null && !string.IsNullOrWhiteSpace(filterAttr.Column) && !string.IsNullOrWhiteSpace(filterAttr.Value))
+					{
+						// Build simple equality: relatedTable.Column = 'Value'
+						var filterMember = relatedEntity.StaticType.GetProperty(filterAttr.Column) ?? 
+							(MemberInfo)relatedEntity.StaticType.GetField(filterAttr.Column);
+						
+						if (filterMember != null && _mapping.IsColumn(relatedEntity, filterMember))
+						{
+							var columnName = _mapping.GetColumnName(relatedEntity, filterMember);
+							var columnType = this.GetColumnType(relatedEntity, filterMember);
+
+							var columnExpr = new ColumnExpression(
+								TypeHelper.GetMemberType(filterMember), 
+								columnType, 
+								projection.Select.Alias, 
+								columnName);
+
+							var valueExpr = Expression.Constant(filterAttr.Value, TypeHelper.GetMemberType(filterMember));
+							var filterCondition = Expression.Equal(columnExpr, valueExpr);
 
 							// Add filter to WHERE clause (becomes part of JOIN ON condition)
 							where = (where != null) ? where.And(filterCondition) : filterCondition;

@@ -29,7 +29,7 @@ namespace IQToolkit.Data.Advantage
         /// This means the navigation property will only be populated if the filter condition is met.
         /// Works with IncludeWith for eager loading.
         /// </remarks>
-        public void AssociateWith<TEntity, TRelated>(
+        public new void AssociateWith<TEntity, TRelated>(
           Expression<Func<TEntity, TRelated>> memberSelector,
                   Expression<Func<TRelated, bool>> filterPredicate)
         {
@@ -62,7 +62,7 @@ namespace IQToolkit.Data.Advantage
         /// The filter is applied as part of the SQL JOIN ON condition, not as a separate WHERE clause.
         /// Works with IncludeWith for eager loading.
         /// </remarks>
-        public void AssociateWith<TEntity, TRelated>(
+        public new void AssociateWith<TEntity, TRelated>(
      Expression<Func<TEntity, IEnumerable<TRelated>>> memberSelector,
             Expression<Func<TRelated, bool>> filterPredicate)
         {
