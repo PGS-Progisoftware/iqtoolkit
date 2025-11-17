@@ -251,6 +251,35 @@ namespace IQToolkit.Data.Advantage
 
 		protected override Expression VisitMethodCall(MethodCallExpression m)
 		{
+			// Handle Convert.ToXXX(string) methods - translate to VAL()
+			if (m.Method.DeclaringType == typeof(Convert) && m.Arguments.Count == 1)
+			{
+				var arg = m.Arguments[0];
+				
+				// Only translate if the argument is a string (column or expression)
+				if (arg.Type == typeof(string))
+				{
+					switch (m.Method.Name)
+					{
+						case "ToInt16":
+						case "ToInt32":
+						case "ToInt64":
+						case "ToDecimal":
+						case "ToDouble":
+						case "ToSingle":
+						case "ToByte":
+						case "ToSByte":
+						case "ToUInt16":
+						case "ToUInt32":
+						case "ToUInt64":
+							this.Write("VAL(");
+							this.Visit(arg);
+							this.Write(")");
+							return m;
+					}
+				}
+			}
+
 			if (m.Method.DeclaringType == typeof(string))
 			{
 				switch (m.Method.Name)
