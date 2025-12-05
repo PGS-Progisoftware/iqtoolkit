@@ -299,11 +299,19 @@ namespace IQToolkit.Data
 
                 try
                 {
-                    DbCommand cmd = this.GetCommand(command, paramValues);
-                    DbDataReader reader = this.ExecuteReader(cmd);
-                    var result = Project(reader, fnProjector, entity, true);
+                    
+					DbCommand cmd = this.GetCommand(command, paramValues);
+					var sw = System.Diagnostics.Stopwatch.StartNew();
+					DbDataReader reader = this.ExecuteReader(cmd);
+                    sw.Stop();
+                    this.LogMessage(string.Format("-- ExecuteReader Execution Time: {0} ms", sw.ElapsedMilliseconds));
+                    sw.Restart();
+					var result = Project(reader, fnProjector, entity, true);
+                    sw.Stop();
+                    this.LogMessage(string.Format("-- Project Execution Time: {0} ms", sw.ElapsedMilliseconds));
+					sw.Restart();
 
-                    if (this.provider.ActionOpenedConnection)
+					if (this.provider.ActionOpenedConnection)
                     {
                         result = result.ToList();
                     }
@@ -311,8 +319,11 @@ namespace IQToolkit.Data
                     {
                         result = new EnumerateOnce<T>(result);
                     }
+                    sw.Stop();
+                    this.LogMessage(string.Format("-- Enumerate Execution Time: {0} ms", sw.ElapsedMilliseconds));
+     
 
-                    return result;
+					return result;
                 }
                 finally
                 {

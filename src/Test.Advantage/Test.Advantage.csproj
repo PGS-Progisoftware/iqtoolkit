@@ -4,12 +4,10 @@
     <TargetFramework>net48</TargetFramework>
     <RootNamespace>Test.Advantage</RootNamespace>
     <AssemblyName>Test.Advantage</AssemblyName>
+	  <LangVersion>10.0</LangVersion>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\..\..\LocasystXSharp\PCSLib.Data\CharBacked.cs" Link="CharBacked.cs" />
-    <Compile Include="..\..\..\LocasystXSharp\PCSLib.Data\DBF\LocDet.cs" Link="LocDet.cs" />
-    <Compile Include="..\..\..\LocasystXSharp\PCSLib.Data\DBF\LocGen.cs" Link="LocGen.cs" />
-    <Compile Include="..\..\..\LocasystXSharp\PCSLib.Data\Enums\LocGenStatut.cs" Link="LocGenStatut.cs" />
     <Compile Include="..\..\..\LocasystXSharp\PCSLib.Data\Utils.cs" Link="Utils.cs" />
   </ItemGroup>
   <ItemGroup>

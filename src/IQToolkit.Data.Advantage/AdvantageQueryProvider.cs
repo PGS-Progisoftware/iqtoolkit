@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
 using System.Diagnostics;
+using System.Linq;
 
 namespace IQToolkit.Data.Advantage
 {
@@ -15,7 +16,7 @@ namespace IQToolkit.Data.Advantage
 
         /// <summary>
         /// Creates a new AdvantageQueryProvider with the specified connection string.
-        /// </summary>
+        /// /// </summary>
         public static AdvantageQueryProvider Create(string connectionString, QueryPolicy policy = null)
         {
             return new AdvantageQueryProvider(connectionString, policy);
@@ -65,21 +66,77 @@ namespace IQToolkit.Data.Advantage
                 _provider = provider;
             }
 
-			//TODO : config switch
-			public override object Convert(object value, Type type)
-			{
-				bool isNullableType = TypeHelper.IsNullableType(type);
+            public override object Convert(object value, Type type)
+            {
+     if (value == null)
+  {
+                return TypeHelper.GetDefault(type);
+         }
 
-				// Treat empty/whitespace strings as null for nullable types
-				if (value is string str && string.IsNullOrWhiteSpace(str))
-				{
-					return DBNull.Value;
-				}
+                type = TypeHelper.GetNonNullableType(type);
+      Type vtype = value.GetType();
 
-				return base.Convert(value, type);
-			}
+         // For string values: treat empty/whitespace as null (except for CharBacked enums, handled below)
+        if (vtype == typeof(string))
+          {
+           var str = (string)value;
+  if (string.IsNullOrWhiteSpace(str) && !type.IsEnum)
+        {
+        return TypeHelper.GetDefault(type);
+       }
+   }
 
+        if (type != vtype)
+   {
+     if (type.IsEnum)
+       {
+            // Special handling for CharBacked enums
+   if (vtype == typeof(string))
+  {
+            var stringValue = (string)value;
 
+              // Check if this is a CharBacked enum
+       var customAttributes = type.GetCustomAttributes(false);
+      bool isCharBacked = customAttributes.Cast<object>()
+     .Any(a => a.GetType().Name.Contains("CharBacked"));
+ 
+        if (isCharBacked)
+       {
+        // For CharBacked enums: empty/whitespace from CHAR(1) => space character
+       if (string.IsNullOrWhiteSpace(stringValue))
+      {
+      stringValue = " ";
+ }
+      
+      // CharBacked enums store the character value, not the enum name
+           // Convert the character to its integer value and use Enum.ToObject
+      if (stringValue.Length > 0)
+         {
+  return Enum.ToObject(type, (int)stringValue[0]);
+          }
+         }
+  
+          // For non-CharBacked enums, parse by name
+     return Enum.Parse(type, stringValue);
+       }
+        else
+     {
+      Type utype = Enum.GetUnderlyingType(type);
+
+      if (utype != vtype)
+         {
+  value = System.Convert.ChangeType(value, utype);
+   }
+
+          return Enum.ToObject(type, value);
+     }
+      }
+
+     return System.Convert.ChangeType(value, type);
+        }
+
+      return value;
+  }
 			protected override DbCommand GetCommand(QueryCommand query, object[] paramValues)
 			{
 				return base.GetCommand(query, paramValues);
@@ -152,27 +209,25 @@ namespace IQToolkit.Data.Advantage
 			{
 			}
 
-
 			protected override bool IsDBNull(int ordinal)
 			{
-				if (base.IsDBNull(ordinal))
-				{
-					return true;
-				}
-
-				if (this.GetFieldType(ordinal) == typeof(string))
-				{
-					var value = this.GetString(ordinal);
-					if (value is string str && string.IsNullOrWhiteSpace(str))
-					{
-						return true;
-					}
-				}
-
+				// Only check the actual database NULL value
+				// Let Convert/GetString handle empty/whitespace string logic
 				return base.IsDBNull(ordinal);
 			}
 
-		
+			protected override string GetString(int ordinal)
+			{
+				var value = base.GetString(ordinal);
+				
+				// For Advantage: treat empty/whitespace strings as null
+				if (string.IsNullOrWhiteSpace(value))
+				{
+					return null;
+				}
+				
+				return value;
+			}
 		}
 	}
 }
