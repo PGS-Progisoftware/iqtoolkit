@@ -67,12 +67,106 @@ namespace IQToolkit.Data.Advantage
 
 				// Step 2: Normal translation (binding, optimization, etc.)
 				expression = base.Translate(expression);
+
+				// Step 2b: Rewrite composite field comparisons AGAIN (e.g. inside Where clauses after ProjectTo)
+				// This handles cases where composite fields were hidden by projections and are now exposed as MemberAccess on TableExpression
+				expression = AdvantageCompositeFieldRewriter.Rewrite(expression);
+
+				// Step 2c: Convert MemberAccess on TableExpression/EntityExpression to ColumnExpression
+				// This is needed because Step 2b introduces MemberAccess to underlying columns (Date/Time)
+				// but SqlFormatter expects ColumnExpressions.
+				expression = Columnizer.Columnize(expression, this);
 				
 				// Step 3: Expand composite field accesses in SELECT to underlying columns
 				expression = CompositeFieldExpander.Expand(expression);
 
 				return expression;
 			}
+
+            class Columnizer : DbExpressionVisitor
+            {
+                private readonly AdvantageMapper mapper;
+
+                private Columnizer(AdvantageMapper mapper)
+                {
+                    this.mapper = mapper;
+                }
+
+                public static Expression Columnize(Expression expression, AdvantageMapper mapper)
+                {
+                    return new Columnizer(mapper).Visit(expression);
+                }
+
+                protected override Expression VisitMemberAccess(MemberExpression m)
+                {
+                    var basicMapping = mapper.Mapping as BasicMapping;
+                    if (basicMapping == null)
+                        return base.VisitMemberAccess(m);
+
+                    // Check if accessing a member on a TableExpression
+                    if (m.Expression is TableExpression tex)
+                    {
+                        if (basicMapping.IsColumn(tex.Entity, m.Member))
+                        {
+                            return new ColumnExpression(
+                                TypeHelper.GetMemberType(m.Member),
+                                mapper.GetColumnType(tex.Entity, m.Member),
+                                tex.Alias,
+                                basicMapping.GetColumnName(tex.Entity, m.Member)
+                            );
+                        }
+                    }
+                    // Check if accessing a member on an EntityExpression
+                    else if (m.Expression is EntityExpression ex)
+                    {
+                         if (ex.Expression is AliasedExpression aex)
+                         {
+                             if (basicMapping.IsColumn(ex.Entity, m.Member))
+                             {
+                                return new ColumnExpression(
+                                    TypeHelper.GetMemberType(m.Member),
+                                    mapper.GetColumnType(ex.Entity, m.Member),
+                                    aex.Alias,
+                                    basicMapping.GetColumnName(ex.Entity, m.Member)
+                                );
+                             }
+                         }
+                         else 
+                         {
+                             var memberExpr = FindMemberInEntity(ex.Expression, m.Member);
+                             if (memberExpr != null)
+                             {
+                                 return this.Visit(memberExpr);
+                             }
+                         }
+                    }
+
+                    return base.VisitMemberAccess(m);
+                }
+
+                private Expression FindMemberInEntity(Expression entityExpression, MemberInfo member)
+                {
+                    if (entityExpression is MemberInitExpression minit)
+                    {
+                        foreach (var binding in minit.Bindings.OfType<MemberAssignment>())
+                        {
+                            if (binding.Member.Name == member.Name)
+                                return binding.Expression;
+                        }
+                        return FindMemberInEntity(minit.NewExpression, member);
+                    }
+                    else if (entityExpression is NewExpression nex && nex.Members != null)
+                    {
+                        for (int i = 0; i < nex.Members.Count; i++)
+                        {
+                            if (nex.Members[i].Name == member.Name)
+                                return nex.Arguments[i];
+                        }
+                    }
+                    
+                    return null;
+                }
+            }
 
 			public override Expression GetMemberExpression(Expression root, MappingEntity entity, MemberInfo member)
 			{

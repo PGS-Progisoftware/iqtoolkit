@@ -1,0 +1,28 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>x86</PlatformTarget>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IQToolkit.Data.Advantage\IQToolkit.Data.Advantage.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Advantage.Data.Provider">
+      <HintPath>..\..\..\..\..\..\..\..\Program Files (x86)\Advantage 12.0\ado.net\Redistribute\Advantage.Data.Provider.dll</HintPath>
+    </Reference>
+    <Reference Include="PCSLib.Data">
+      <HintPath>..\..\..\LocasystXSharp\PCSLib.Data\bin\Debug\netstandard2.0\PCSLib.Data.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Gridify" Version="2.17.2" />
+  </ItemGroup>
+
+</Project>

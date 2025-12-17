@@ -30,43 +30,45 @@ namespace IQToolkit.Data.Advantage
 			if (IsComparisonOperator(node.NodeType))
 			{
 				// Check left side for composite field
-				if (node.Left is MemberExpression leftMember)
+				if (node.Left is MemberExpression leftMember && IsCompositeField(leftMember.Member, out var leftDate, out var leftTime))
 				{
-					if (IsCompositeField(leftMember.Member, out var dateMember, out var timeMember))
+					// Case 1: Right is also Composite
+					if (node.Right is MemberExpression rightMember && IsCompositeField(rightMember.Member, out var rightDate, out var rightTime))
 					{
-						// Extract the constant value from the right side
-						var constantValue = ExtractConstantValue(node.Right);
+						return BuildCompositeToCompositeComparison(node.NodeType, leftMember, leftDate, leftTime, rightMember, rightDate, rightTime);
+					}
 
+					// Case 2: Right is Constant (or evaluates to one)
+					if (TryExtractConstantValue(node.Right, out var constantValue))
+					{
 						// Special handling for null comparisons
-						if (constantValue == null || (node.Right.NodeType == ExpressionType.Constant && ((ConstantExpression)node.Right).Value == null))
+						if (constantValue == null)
 						{
-							return BuildNullComparison(node.NodeType, leftMember, dateMember);
+							return BuildNullComparison(node.NodeType, leftMember, leftDate);
 						}
 
 						if (constantValue is DateTime dt)
 						{
-							return BuildCompositeComparison(node.NodeType, leftMember, dateMember, timeMember, dt);
+							return BuildCompositeComparison(node.NodeType, leftMember, leftDate, leftTime, dt);
 						}
 					}
 				}
 
 				// Check right side for composite field (reversed comparison)
-				if (node.Right is MemberExpression rightMember)
+				if (node.Right is MemberExpression rightComposite && IsCompositeField(rightComposite.Member, out var dateMember, out var timeMember))
 				{
-					if (IsCompositeField(rightMember.Member, out var dateMember, out var timeMember))
+					if (TryExtractConstantValue(node.Left, out var constantValue))
 					{
-						var constantValue = ExtractConstantValue(node.Left);
-
 						// Special handling for null comparisons (reversed)
-						if (constantValue == null || (node.Left.NodeType == ExpressionType.Constant && ((ConstantExpression)node.Left).Value == null))
+						if (constantValue == null)
 						{
-							return BuildNullComparison(node.NodeType, rightMember, dateMember);
+							return BuildNullComparison(node.NodeType, rightComposite, dateMember);
 						}
 
 						if (constantValue is DateTime dt)
 						{
 							var reversedOp = ReverseOperator(node.NodeType);
-							return BuildCompositeComparison(reversedOp, rightMember, dateMember, timeMember, dt);
+							return BuildCompositeComparison(reversedOp, rightComposite, dateMember, timeMember, dt);
 						}
 					}
 				}
@@ -76,55 +78,9 @@ namespace IQToolkit.Data.Advantage
 			return base.VisitBinary(node);
 		}
 
-		protected override Expression VisitUnary(UnaryExpression node)
-		{
-			// Handle Convert expressions that wrap composite field member access
-			// This handles cases like: Convert(entity.DTDEP) != null
-			if (node.NodeType == ExpressionType.Convert && node.Operand is MemberExpression memberExpr)
-			{
-				if (IsCompositeField(memberExpr.Member, out var dateMember, out var timeMember))
-				{
-					// Replace the composite field access with the date field access
-					var entityType = memberExpr.Expression.Type;
-					var dateProperty = (MemberInfo)entityType.GetProperty(dateMember) ?? entityType.GetField(dateMember);
-					
-					if (dateProperty == null)
-					{
-						throw new InvalidOperationException(
-							$"Composite field date member '{dateMember}' not found on type '{entityType.Name}'");
-					}
+		// VisitUnary and VisitMemberAccess removed to prevent incorrect rewriting of composite fields in projections.
+		// The CompositeFieldExpander handles projections correctly by expanding to the underlying columns.
 
-					var dateAccess = Expression.MakeMemberAccess(memberExpr.Expression, dateProperty);
-					// Return a Convert of the date field instead
-					return Expression.Convert(dateAccess, node.Type);
-				}
-			}
-
-			return base.VisitUnary(node);
-		}
-
-		protected override Expression VisitMemberAccess(MemberExpression node)
-		{
-			// Handle direct member access to composite fields
-			// This handles cases like: entity.DTDEP != null (without Convert wrapper)
-			if (IsCompositeField(node.Member, out var dateMember, out var timeMember))
-			{
-				// Replace the composite field access with the date field access
-				var entityType = node.Expression.Type;
-				var dateProperty = (MemberInfo)entityType.GetProperty(dateMember) ?? entityType.GetField(dateMember);
-				
-				if (dateProperty == null)
-				{
-					throw new InvalidOperationException(
-						$"Composite field date member '{dateMember}' not found on type '{entityType.Name}'");
-				}
-
-				// Return access to the date field instead of the composite field
-				return Expression.MakeMemberAccess(node.Expression, dateProperty);
-			}
-
-			return base.VisitMemberAccess(node);
-		}
 
 		private static bool IsComparisonOperator(ExpressionType nodeType)
 		{
@@ -136,12 +92,15 @@ namespace IQToolkit.Data.Advantage
 			nodeType == ExpressionType.LessThanOrEqual;
 		}
 
-		private static object ExtractConstantValue(Expression expression)
+		private static bool TryExtractConstantValue(Expression expression, out object value)
 		{
+			value = null;
+
 			// Handle direct constant
 			if (expression is ConstantExpression constExpr)
 			{
-				return constExpr.Value;
+				value = constExpr.Value;
+				return true;
 			}
 
 			// Handle member access to a constant (e.g., captured variables in closures)
@@ -151,15 +110,17 @@ namespace IQToolkit.Data.Advantage
 				var member = memberExpr.Member;
 				if (member is FieldInfo field)
 				{
-					return field.GetValue(closureConst.Value);
+					value = field.GetValue(closureConst.Value);
+					return true;
 				}
 				else if (member is PropertyInfo prop)
 				{
-					return prop.GetValue(closureConst.Value);
+					value = prop.GetValue(closureConst.Value);
+					return true;
 				}
 			}
 
-			return null;
+			return false;
 		}
 
 		private static ExpressionType ReverseOperator(ExpressionType op)
@@ -240,6 +201,102 @@ namespace IQToolkit.Data.Advantage
 			}
 		}
 
+		private Expression BuildCompositeToCompositeComparison(
+			ExpressionType op,
+			MemberExpression leftComposite, string leftDateCol, string leftTimeCol,
+			MemberExpression rightComposite, string rightDateCol, string rightTimeCol)
+		{
+			// Left side access
+			var leftEntityType = leftComposite.Expression.Type;
+			var leftParam = leftComposite.Expression;
+			var leftDateMember = (MemberInfo)leftEntityType.GetProperty(leftDateCol) ?? leftEntityType.GetField(leftDateCol);
+			var leftTimeMember = (MemberInfo)leftEntityType.GetProperty(leftTimeCol) ?? leftEntityType.GetField(leftTimeCol);
+			var leftDateAccess = Expression.MakeMemberAccess(leftParam, leftDateMember);
+			var leftTimeAccess = Expression.MakeMemberAccess(leftParam, leftTimeMember);
+
+			// Right side access
+			var rightEntityType = rightComposite.Expression.Type;
+			var rightParam = rightComposite.Expression;
+			var rightDateMember = (MemberInfo)rightEntityType.GetProperty(rightDateCol) ?? rightEntityType.GetField(rightDateCol);
+			var rightTimeMember = (MemberInfo)rightEntityType.GetProperty(rightTimeCol) ?? rightEntityType.GetField(rightTimeCol);
+			var rightDateAccess = Expression.MakeMemberAccess(rightParam, rightDateMember);
+			var rightTimeAccess = Expression.MakeMemberAccess(rightParam, rightTimeMember);
+
+			// Ensure types match for date comparison (handle nullable)
+			Expression rightDateExpr = rightDateAccess;
+			if (leftDateAccess.Type != rightDateExpr.Type)
+			{
+				if (TypeHelper.IsNullableType(leftDateAccess.Type) && !TypeHelper.IsNullableType(rightDateExpr.Type))
+				{
+					rightDateExpr = Expression.Convert(rightDateExpr, leftDateAccess.Type);
+				}
+			}
+
+			var stringCompareMethod = typeof(string).GetMethod("Compare", new[] { typeof(string), typeof(string) });
+
+			Expression result;
+
+			switch (op)
+			{
+				case ExpressionType.Equal:
+					result = Expression.AndAlso(
+						Expression.Equal(leftDateAccess, rightDateExpr),
+						Expression.Equal(leftTimeAccess, rightTimeAccess));
+					break;
+
+				case ExpressionType.NotEqual:
+					result = Expression.OrElse(
+						Expression.NotEqual(leftDateAccess, rightDateExpr),
+						Expression.NotEqual(leftTimeAccess, rightTimeAccess));
+					break;
+
+				case ExpressionType.GreaterThan:
+					result = Expression.OrElse(
+						Expression.GreaterThan(leftDateAccess, rightDateExpr),
+						Expression.AndAlso(
+							Expression.Equal(leftDateAccess, rightDateExpr),
+							Expression.GreaterThan(
+								Expression.Call(stringCompareMethod, leftTimeAccess, rightTimeAccess),
+								Expression.Constant(0))));
+					break;
+
+				case ExpressionType.GreaterThanOrEqual:
+					result = Expression.OrElse(
+						Expression.GreaterThan(leftDateAccess, rightDateExpr),
+						Expression.AndAlso(
+							Expression.Equal(leftDateAccess, rightDateExpr),
+							Expression.GreaterThanOrEqual(
+								Expression.Call(stringCompareMethod, leftTimeAccess, rightTimeAccess),
+								Expression.Constant(0))));
+					break;
+
+				case ExpressionType.LessThan:
+					result = Expression.OrElse(
+						Expression.LessThan(leftDateAccess, rightDateExpr),
+						Expression.AndAlso(
+							Expression.Equal(leftDateAccess, rightDateExpr),
+							Expression.LessThan(
+								Expression.Call(stringCompareMethod, leftTimeAccess, rightTimeAccess),
+								Expression.Constant(0))));
+					break;
+
+				case ExpressionType.LessThanOrEqual:
+					result = Expression.OrElse(
+						Expression.LessThan(leftDateAccess, rightDateExpr),
+						Expression.AndAlso(
+							Expression.Equal(leftDateAccess, rightDateExpr),
+							Expression.LessThanOrEqual(
+								Expression.Call(stringCompareMethod, leftTimeAccess, rightTimeAccess),
+								Expression.Constant(0))));
+					break;
+
+				default:
+					throw new NotSupportedException($"Operator '{op}' is not supported for composite field comparisons");
+			}
+
+			return result;
+		}
+
 		private Expression BuildCompositeComparison(
 			ExpressionType op,
 			MemberExpression compositeMember,
@@ -265,7 +322,12 @@ namespace IQToolkit.Data.Advantage
 			var dateAccess = Expression.MakeMemberAccess(parameter, dateMember);
 			var timeAccess = Expression.MakeMemberAccess(parameter, timeMember);
 
-			var dateConst = Expression.Constant(value.Date, typeof(DateTime));
+			Expression dateConst = Expression.Constant(value.Date, typeof(DateTime));
+			if (TypeHelper.IsNullableType(dateAccess.Type) && !TypeHelper.IsNullableType(dateConst.Type))
+			{
+				dateConst = Expression.Convert(dateConst, dateAccess.Type);
+			}
+
 			var timeConst = Expression.Constant(value.ToString("HH:mm"), typeof(string));
 
 			// For string comparisons, we need to use String.Compare instead of binary operators

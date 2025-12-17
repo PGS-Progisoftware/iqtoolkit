@@ -21,6 +21,9 @@
     <Reference Include="Advantage.Data.Provider">
       <HintPath>Z:\Redistribute\Advantage.Data.Provider.dll</HintPath>
     </Reference>
+    <Reference Include="PCSLib.Data">
+      <HintPath>..\..\..\LocasystXSharp\PCSLib.Data\bin\Debug\netstandard2.0\PCSLib.Data.dll</HintPath>
+    </Reference>
   </ItemGroup>
   <ItemGroup>
     <None Update="ace64.dll">
