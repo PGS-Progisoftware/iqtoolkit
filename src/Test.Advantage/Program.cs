@@ -13,6 +13,7 @@ namespace Test.Advantage
 {
 
 	//public enum LocGenStatut
+
 	//{
 	//	/// <summary>
 	//	/// Devis
@@ -183,8 +184,16 @@ namespace Test.Advantage
 
 		class Program
 	{
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+        public static extern IntPtr LoadLibrary(string lpFileName);
+
 		static void Main(string[] args)
 		{
+			Console.WriteLine($"Is64BitProcess: {Environment.Is64BitProcess}");
+            string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ace64.dll");
+            IntPtr handle = LoadLibrary(path);
+            Console.WriteLine($"LoadLibrary(ace64.dll): {handle}, Error: {System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
+
 			string connectionString = "Data Source=C:\\PGS\\GONESS;ServerType=local;TableType=CDX;TrimTrailingSpaces=True;CharType=OEM";
 
 			var provider = new AdvantageQueryProvider(connectionString);
