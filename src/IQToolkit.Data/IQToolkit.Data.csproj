@@ -11,7 +11,7 @@
     <RootNamespace>IQToolkit.Data</RootNamespace>
     <AssemblyName>IQToolkit.Data</AssemblyName>
     <!--<TargetFrameworkVersion>v4.5</TargetFrameworkVersion>-->
-    <TargetFramework>netstandard1.4</TargetFramework>
+    <TargetFramework>netstandard2.0</TargetFramework>
     <FileAlignment>512</FileAlignment>
     <FileUpgradeFlags>
     </FileUpgradeFlags>

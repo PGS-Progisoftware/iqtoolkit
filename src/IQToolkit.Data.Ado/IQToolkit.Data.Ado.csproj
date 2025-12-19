@@ -9,7 +9,7 @@
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>IQToolkit.Data.Ado</RootNamespace>
     <AssemblyName>IQToolkit.Data.Ado</AssemblyName>
-    <TargetFramework>netstandard1.4</TargetFramework>
+    <TargetFramework>netstandard2.0</TargetFramework>
     <!--<TargetFrameworkVersion>v4.5</TargetFrameworkVersion>-->
     <FileAlignment>512</FileAlignment>
     <TargetFrameworkProfile />

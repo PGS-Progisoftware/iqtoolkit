@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net48</TargetFramework>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
     <AssemblyName>IQToolkit.Data.Advantage</AssemblyName>
     <RootNamespace>IQToolkit.Data.Advantage</RootNamespace>
   </PropertyGroup>
