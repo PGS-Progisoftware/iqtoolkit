@@ -43,7 +43,7 @@ namespace IQToolkit.Data.Advantage
 
         #endregion
 
-        // Override the Executor to ensure parameters are unnamed for positional parameters
+        // Override the Executor to ensure parameters are handled correctly
         protected override QueryExecutor CreateExecutor()
         {
             return new AdvantageExecutor(this);
@@ -60,6 +60,8 @@ namespace IQToolkit.Data.Advantage
         class AdvantageExecutor : Executor
         {
             private readonly AdvantageQueryProvider _provider;
+            private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, bool> _charBackedEnumCache 
+                = new System.Collections.Concurrent.ConcurrentDictionary<Type, bool>();
 
             public AdvantageExecutor(AdvantageQueryProvider provider) : base(provider) 
             { 
@@ -68,75 +70,72 @@ namespace IQToolkit.Data.Advantage
 
             public override object Convert(object value, Type type)
             {
-     if (value == null)
-  {
-                return TypeHelper.GetDefault(type);
-         }
+                if (value == null)
+                {
+                    return TypeHelper.GetDefault(type);
+                }
 
                 type = TypeHelper.GetNonNullableType(type);
-      Type vtype = value.GetType();
+                Type vtype = value.GetType();
 
-         // For string values: treat empty/whitespace as null (except for CharBacked enums, handled below)
-        if (vtype == typeof(string))
-          {
-           var str = (string)value;
-  if (string.IsNullOrWhiteSpace(str) && !type.IsEnum)
-        {
-        return TypeHelper.GetDefault(type);
-       }
-   }
+                // For string values: treat empty/whitespace as null (except for CharBacked enums, handled below)
+                if (vtype == typeof(string))
+                {
+                    var str = (string)value;
+                    if (string.IsNullOrWhiteSpace(str) && !type.IsEnum)
+                    {
+                        return TypeHelper.GetDefault(type);
+                    }
+                }
 
-        if (type != vtype)
-   {
-     if (type.IsEnum)
-       {
-            // Special handling for CharBacked enums
-   if (vtype == typeof(string))
-  {
-            var stringValue = (string)value;
+                if (type != vtype)
+                {
+                    if (type.IsEnum)
+                    {
+                        // Special handling for CharBacked enums
+                        if (vtype == typeof(string))
+                        {
+                            var stringValue = (string)value;
 
-              // Check if this is a CharBacked enum
-       var customAttributes = type.GetCustomAttributes(false);
-      bool isCharBacked = customAttributes.Cast<object>()
-     .Any(a => a.GetType().Name.Contains("CharBacked"));
- 
-        if (isCharBacked)
-       {
-        // For CharBacked enums: empty/whitespace from CHAR(1) => space character
-       if (string.IsNullOrWhiteSpace(stringValue))
-      {
-      stringValue = " ";
- }
-      
-      // CharBacked enums store the character value, not the enum name
-           // Convert the character to its integer value and use Enum.ToObject
-      if (stringValue.Length > 0)
-         {
-  return Enum.ToObject(type, (int)stringValue[0]);
-          }
-         }
-  
-          // For non-CharBacked enums, parse by name
-     return Enum.Parse(type, stringValue);
-       }
-        else
-     {
-      Type utype = Enum.GetUnderlyingType(type);
+                            // Check if this is a CharBacked enum (cached)
+                            bool isCharBacked = _charBackedEnumCache.GetOrAdd(type, t => 
+                                t.GetCustomAttributes(false).Cast<object>().Any(a => a.GetType().Name.Contains("CharBacked")));
+                        
+                            if (isCharBacked)
+                            {
+                                // For CharBacked enums: empty/whitespace from CHAR(1) => space character
+                                if (string.IsNullOrWhiteSpace(stringValue))
+                                {
+                                    stringValue = " ";
+                                }
+                                
+                                // CharBacked enums store the character value, not the enum name
+                                // Convert the character to its integer value and use Enum.ToObject
+                                if (stringValue.Length > 0)
+                                {
+                                    return Enum.ToObject(type, (int)stringValue[0]);
+                                }
+                            }
+                        
+                            // For non-CharBacked enums, parse by name
+                            return Enum.Parse(type, stringValue);
+                        }
+                        else
+                        {
+                            Type utype = Enum.GetUnderlyingType(type);
+                            if (utype != vtype)
+                            {
+                                value = System.Convert.ChangeType(value, utype);
+                            }
+                            return Enum.ToObject(type, value);
+                        }
+                    }
 
-      if (utype != vtype)
-         {
-  value = System.Convert.ChangeType(value, utype);
-   }
+                    return System.Convert.ChangeType(value, type);
+                }
 
-          return Enum.ToObject(type, value);
-     }
-      }
-
-     return System.Convert.ChangeType(value, type);
-        }
-
-      return value;
-  }
+                return value;
+            }
 			protected override DbCommand GetCommand(QueryCommand query, object[] paramValues)
 			{
 				return base.GetCommand(query, paramValues);
