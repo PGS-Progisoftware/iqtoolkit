@@ -62,6 +62,11 @@ namespace IQToolkit.Data.Advantage
 
 			public override Expression Translate(Expression expression)
 			{
+                // Step 0: Rewrite Select(nav).Distinct() to explicit Join/SelectMany
+                // This avoids QueryBinder generating inefficient SQL (subquery with DISTINCT *)
+                // which causes issues with Advantage (MEMO columns) and performance.
+                expression = NavigationPropertyRewriter.Rewrite(_mapping, expression);
+
 				// Step 1: Rewrite composite field comparisons (e.g., DTDEP > x) into date/time logic
 				expression = AdvantageCompositeFieldRewriter.Rewrite(expression);
 
@@ -76,6 +81,10 @@ namespace IQToolkit.Data.Advantage
 				// This is needed because Step 2b introduces MemberAccess to underlying columns (Date/Time)
 				// but SqlFormatter expects ColumnExpressions.
 				expression = Columnizer.Columnize(expression, this);
+				
+				// Step 2d: Fix GROUP BY expressions that reference columns from projections with navigation properties
+				// This ensures GROUP BY clauses correctly reference columns from joined tables
+				expression = GroupByColumnFixer.Fix(expression);
 				
 				// Step 3: Expand composite field accesses in SELECT to underlying columns
 				expression = CompositeFieldExpander.Expand(expression);
@@ -361,6 +370,372 @@ namespace IQToolkit.Data.Advantage
 
 				return new EntityExpression(entity, this.BuildEntityExpression(entity, assignments));
 			}
+
+			private class NavigationPropertyRewriter : ExpressionVisitor
+			{
+				private readonly AdvantageMapping mapping;
+				private IQueryProvider provider;
+
+				private NavigationPropertyRewriter(AdvantageMapping mapping, IQueryProvider provider)
+				{
+					this.mapping = mapping;
+					this.provider = provider;
+				}
+
+				public static Expression Rewrite(AdvantageMapping mapping, Expression expression)
+				{
+					var finder = new ProviderFinder();
+					finder.Find(expression);
+					if (finder.Provider == null) return expression;
+
+					return new NavigationPropertyRewriter(mapping, finder.Provider).Visit(expression);
+				}
+
+				class ProviderFinder : ExpressionVisitor
+				{
+					public IQueryProvider Provider { get; private set; }
+                    
+                    public void Find(Expression expression)
+                    {
+                        this.Visit(expression);
+                    }
+
+					protected override Expression VisitConstant(ConstantExpression c)
+					{
+						if (Provider == null && c.Value is IQueryable q)
+						{
+							Provider = q.Provider;
+						}
+						return base.VisitConstant(c);
+					}
+				}
+
+				protected override Expression VisitMethodCall(MethodCallExpression m)
+				{
+					if (m.Method.Name == "Distinct" && m.Arguments.Count == 1)
+					{
+						var source = this.Visit(m.Arguments[0]);
+						
+						// Check if source is Select(x => x.Nav.Prop)
+						if (source is MethodCallExpression select && 
+							select.Method.Name == "Select" && 
+							select.Arguments.Count == 2)
+						{
+							var selector = (LambdaExpression)((UnaryExpression)select.Arguments[1]).Operand;
+							var param = selector.Parameters[0];
+							var body = selector.Body;
+
+							if (body is MemberExpression mem && IsNavigationProperty(mem, out var entityType, out var member))
+							{
+								// Rewrite to SelectMany
+								return RewriteToSelectMany(select.Arguments[0], param, mem, entityType, member);
+							}
+						}
+						
+						// Reconstruct Distinct with potentially rewritten source
+						if (source != m.Arguments[0])
+						{
+							return Expression.Call(m.Method, source);
+						}
+					}
+                    // Removed potentially aggressive Select rewriting that caused regressions in projections with collections or filters
+                    // The Distinct fix is handled by the block above.
+                    /*
+                    else if (m.Method.Name == "Select" && m.Arguments.Count == 2)
+                    {
+                        // Check if projection contains navigation properties that need rewriting
+                        var source = this.Visit(m.Arguments[0]);
+                        var selector = (LambdaExpression)((UnaryExpression)m.Arguments[1]).Operand;
+                        var param = selector.Parameters[0];
+                        
+                        // Find first navigation property in projection
+                        var finder = new NavigationFinder(mapping, param);
+                        finder.Find(selector.Body);
+                        
+                        if (finder.FoundNavigation != null)
+                        {
+                            var nav = finder.FoundNavigation;
+                            var entityType = TypeHelper.GetElementType(nav.Type) ?? nav.Type;
+                            var member = nav.Member;
+                            
+                            var rewritten = RewriteSelectToSelectMany(source, param, selector, nav, entityType, member);
+                            if (rewritten != null)
+                                return rewritten;
+                        }
+                        
+                        if (source != m.Arguments[0])
+                        {
+                            return Expression.Call(m.Method, source, m.Arguments[1]);
+                        }
+                    } 
+                    */
+
+					return base.VisitMethodCall(m);
+				}
+
+                class NavigationFinder : ExpressionVisitor
+                {
+                    private AdvantageMapping mapping;
+                    private ParameterExpression param;
+                    public MemberExpression FoundNavigation { get; private set; }
+
+                    public NavigationFinder(AdvantageMapping mapping, ParameterExpression param)
+                    {
+                        this.mapping = mapping;
+                        this.param = param;
+                    }
+
+                    protected override Expression VisitMemberAccess(MemberExpression m)
+                    {
+                        if (FoundNavigation == null && m.Expression == param && 
+                            mapping.IsRelationship(mapping.GetEntity(m.Expression.Type), m.Member))
+                        {
+                            FoundNavigation = m;
+                            return m;
+                        }
+                        return base.VisitMemberAccess(m);
+                    }
+
+                    public void Find(Expression expression)
+                    {
+                        this.Visit(expression);
+                    }
+                }
+
+				private Expression RewriteSelectToSelectMany(Expression source, ParameterExpression param, LambdaExpression selector, MemberExpression nav, Type relatedType, MemberInfo relationMember)
+				{
+					// Rewrite: source.Select(x => new { P = x.Nav.Prop })
+					// To: source.SelectMany(x => Table<Related>.Where(y => y.PK == x.FK).DefaultIfEmpty(), (x, y) => new { P = y.Prop })
+					
+					// 1. Build Collection Selector: x => Table<Related>.Where(...)
+					var relatedTable = this.provider.CreateQuery(
+                        Expression.Call(
+                            typeof(Queryable), 
+                            "AsQueryable", 
+                            new[] { relatedType }, 
+                            Expression.Constant(Activator.CreateInstance(typeof(List<>).MakeGenericType(relatedType)))
+                        )
+                    );
+					
+					var getTableMethod = this.provider.GetType().GetMethod("GetTable", Type.EmptyTypes).MakeGenericMethod(relatedType);
+					var tableQuery = getTableMethod.Invoke(this.provider, null);
+					var tableExpression = Expression.Constant(tableQuery);
+
+					var yParam = Expression.Parameter(relatedType, "y");
+					var entity = mapping.GetEntity(param.Type);
+					var relatedEntity = mapping.GetEntity(relatedType);
+					
+					var fkMembers = mapping.GetAssociationKeyMembers(entity, relationMember).ToList();
+					var pkMembers = mapping.GetAssociationRelatedKeyMembers(entity, relationMember).ToList();
+					
+                    if (fkMembers.Count == 0 || pkMembers.Count == 0) return null;
+
+					Expression whereBody = null;
+					for (int i = 0; i < fkMembers.Count; i++)
+					{
+						var fk = Expression.MakeMemberAccess(param, fkMembers[i]);
+						var pk = Expression.MakeMemberAccess(yParam, pkMembers[i]);
+						var eq = Expression.Equal(pk, fk);
+						whereBody = (whereBody == null) ? eq : Expression.AndAlso(whereBody, eq);
+					}
+					
+					var whereLambda = Expression.Lambda(whereBody, yParam);
+					
+					var whereCall = Expression.Call(
+						typeof(Queryable),
+						"Where",
+						new[] { relatedType },
+						tableExpression,
+						whereLambda
+					);
+					
+                    // Use reflection to find DefaultIfEmpty to avoid ambiguity or resolution issues
+                    var defaultIfEmptyMethod = typeof(Queryable).GetMethods()
+                        .First(m => m.Name == "DefaultIfEmpty" && m.GetParameters().Length == 1)
+                        .MakeGenericMethod(relatedType);
+
+					var defaultIfEmptyCall = Expression.Call(
+                        defaultIfEmptyMethod,
+						whereCall
+					);
+
+                    // Explicitly specify the delegate type to match SelectMany signature (IEnumerable instead of IQueryable)
+                    var enumerableType = typeof(IEnumerable<>).MakeGenericType(relatedType);
+                    var funcType = typeof(Func<,>).MakeGenericType(param.Type, enumerableType);
+                    
+                    // Note: We avoid Expression.Convert(defaultIfEmptyCall, enumerableType) here because 
+                    // QueryBinder in IQToolkit expects the collection selector to be a MethodCall to DefaultIfEmpty directly.
+                    // If we wrap it in a Convert, QueryBinder fails to recognize the DefaultIfEmpty call and throws 
+                    // "The expression of type ... is not a sequence".
+                    var collectionSelector = Expression.Lambda(funcType, defaultIfEmptyCall, param);
+
+					// 2. Build Result Selector: (x, y) => new { P = y.Prop }
+					// We need to replace occurrences of x.Nav with y in the original selector body
+					var replacer = new NavigationReplacer(nav, yParam);
+					replacer.Replace(selector.Body);
+					var newBody = replacer.Result;
+					
+					var resultSelector = Expression.Lambda(newBody, param, yParam);
+					
+					// 3. Call SelectMany
+					// There are two SelectMany overloads with 3 parameters:
+					// 1. SelectMany(source, Func<T, IEnumerable<R>>, Func<T, R, TResult>) - what we need
+					// 2. SelectMany(source, Func<T, int, IEnumerable<R>>, Func<T, R, TResult>) - has index parameter
+					// We need the one where the collection selector is Func<TSource, IEnumerable<TCollection>>
+					// (2 generic args), not Func<TSource, int, IEnumerable<TCollection>> (3 generic args)
+                    var selectManyMethod = typeof(Queryable).GetMethods()
+                        .First(m => m.Name == "SelectMany" 
+							&& m.GetParameters().Length == 3
+							&& m.GetParameters()[1].ParameterType.GetGenericArguments()[0].GetGenericArguments().Length == 2)
+                        .MakeGenericMethod(param.Type, relatedType, selector.Body.Type);
+
+					return Expression.Call(
+                        selectManyMethod,
+						source,
+						Expression.Quote(collectionSelector),
+						Expression.Quote(resultSelector)
+					);
+				}
+
+				class NavigationReplacer : ExpressionVisitor
+				{
+					private MemberExpression target;
+					private Expression replacement;
+					public Expression Result { get; private set; }
+
+					public NavigationReplacer(MemberExpression target, Expression replacement)
+					{
+						this.target = target;
+						this.replacement = replacement;
+					}
+
+					public void Replace(Expression expression)
+					{
+						this.Result = this.Visit(expression);
+					}
+
+					protected override Expression VisitMemberAccess(MemberExpression m)
+					{
+						if (m.Member == target.Member && m.Expression == target.Expression)
+						{
+							return replacement;
+						}
+						return base.VisitMemberAccess(m);
+					}
+				}
+
+				private bool IsNavigationProperty(MemberExpression m, out Type entityType, out MemberInfo member)
+				{
+					entityType = null;
+					member = null;
+					
+					// Check for x.Nav.Prop pattern
+					if (m.Expression is MemberExpression nav && 
+						nav.Expression is ParameterExpression && 
+						mapping.IsRelationship(mapping.GetEntity(nav.Expression.Type), nav.Member))
+					{
+						entityType = TypeHelper.GetElementType(nav.Type) ?? nav.Type;
+						member = nav.Member;
+						return true;
+					}
+					return false;
+				}
+
+				private Expression RewriteToSelectMany(Expression source, ParameterExpression param, MemberExpression mem, Type relatedType, MemberInfo relationMember)
+				{
+					// Construct: source.SelectMany(x => Table<Related>.Where(y => y.PK == x.FK), (x, y) => y.Prop)
+					
+					var relatedTable = this.provider.CreateQuery(
+                        Expression.Call(
+                            typeof(Queryable), 
+                            "AsQueryable", 
+                            new[] { relatedType }, 
+                            Expression.Constant(Activator.CreateInstance(typeof(List<>).MakeGenericType(relatedType)))
+                        )
+                    );
+					
+					var getTableMethod = this.provider.GetType().GetMethod("GetTable", Type.EmptyTypes).MakeGenericMethod(relatedType);
+					var tableQuery = getTableMethod.Invoke(this.provider, null);
+					var tableExpression = Expression.Constant(tableQuery);
+
+					// Build Where lambda: y => y.PK == x.FK
+					var yParam = Expression.Parameter(relatedType, "y");
+					
+					var entity = mapping.GetEntity(param.Type);
+					var relatedEntity = mapping.GetEntity(relatedType);
+					
+					var fkMembers = mapping.GetAssociationKeyMembers(entity, relationMember).ToList();
+					var pkMembers = mapping.GetAssociationRelatedKeyMembers(entity, relationMember).ToList();
+					
+                    if (fkMembers.Count == 0 || pkMembers.Count == 0) return null;
+
+					Expression whereBody = null;
+					for (int i = 0; i < fkMembers.Count; i++)
+					{
+						var fk = Expression.MakeMemberAccess(param, fkMembers[i]);
+						var pk = Expression.MakeMemberAccess(yParam, pkMembers[i]);
+						var eq = Expression.Equal(pk, fk);
+						whereBody = (whereBody == null) ? eq : Expression.AndAlso(whereBody, eq);
+					}
+					
+					var whereLambda = Expression.Lambda(whereBody, yParam);
+					
+					// Call Where
+					var whereCall = Expression.Call(
+						typeof(Queryable),
+						"Where",
+						new[] { relatedType },
+						tableExpression,
+						Expression.Quote(whereLambda)
+					);
+					
+                    // Construct lambda with explicit return type IEnumerable<T> to satisfy SelectMany signature
+                    // while keeping the body as IQueryable (which QueryBinder understands)
+                    var funcType = typeof(Func<,>).MakeGenericType(param.Type, typeof(IEnumerable<>).MakeGenericType(relatedType));
+                    var collectionSelector = Expression.Lambda(funcType, whereCall, param);
+
+					// Build ResultSelector: (x, y) => y.Prop
+					// mem is x.Nav.Prop. We want y.Prop.
+					// mem.Member is Prop.
+					var propAccess = Expression.MakeMemberAccess(yParam, mem.Member);
+					var resultSelector = Expression.Lambda(propAccess, param, yParam);
+					
+					// Call SelectMany
+					var selectManyCall = Expression.Call(
+						typeof(Queryable),
+						"SelectMany",
+						new[] { param.Type, relatedType, mem.Type },
+						source,
+						Expression.Quote(collectionSelector),
+						Expression.Quote(resultSelector)
+					);
+					
+                    // Rewrite Distinct to GroupBy(x => x).Select(g => g.Key)
+                    // This forces a subquery that RedundantSubqueryRemover respects (usually)
+                    // and avoids the Distinct-loss issue with Count.
+                    
+                    var keyParam = Expression.Parameter(mem.Type, "k");
+                    var groupByCall = Expression.Call(
+                        typeof(Queryable),
+                        "GroupBy",
+                        new[] { mem.Type, mem.Type },
+                        selectManyCall,
+                        Expression.Quote(Expression.Lambda(keyParam, keyParam))
+                    );
+                    
+                    var groupType = typeof(IGrouping<,>).MakeGenericType(mem.Type, mem.Type);
+                    var groupParam = Expression.Parameter(groupType, "g");
+                    var keyAccess = Expression.MakeMemberAccess(groupParam, groupType.GetProperty("Key"));
+                    
+                    return Expression.Call(
+                        typeof(Queryable),
+                        "Select",
+                        new[] { groupType, mem.Type },
+                        groupByCall,
+                        Expression.Quote(Expression.Lambda(keyAccess, groupParam))
+                    );
+				}
+			}
 		}
 
 		/// <summary>
@@ -433,6 +808,92 @@ namespace IQToolkit.Data.Advantage
 				}
 				
 				return null;
+			}
+		}
+
+		/// <summary>
+		/// Fixes GROUP BY expressions that reference columns from projections with navigation properties.
+		/// When grouping by a property from an anonymous type projection that includes navigation properties,
+		/// the GROUP BY clause must correctly reference the underlying column expression.
+		/// The issue is that ProjectColumns might create a new column, but the GROUP BY needs to reference
+		/// the column from the underlying projection's SELECT, not the current SELECT.
+		/// </summary>
+		private class GroupByColumnFixer : DbExpressionVisitor
+		{
+			public static Expression Fix(Expression expression)
+			{
+				return new GroupByColumnFixer().Visit(expression);
+			}
+
+			protected override Expression VisitSelect(SelectExpression select)
+			{
+				select = (SelectExpression)base.VisitSelect(select);
+
+				if (select.GroupBy != null && select.GroupBy.Count > 0 && select.From != null)
+				{
+					// Check if FROM is a ProjectionExpression (subquery)
+					if (select.From is ProjectionExpression fromProj)
+					{
+						// Fix GROUP BY expressions to reference columns from the FROM projection
+						var fixedGroupBy = new List<Expression>();
+						foreach (var groupExpr in select.GroupBy)
+						{
+							var fixedExpr = FixGroupByExpression(groupExpr, select, fromProj);
+							fixedGroupBy.Add(fixedExpr);
+						}
+
+						if (fixedGroupBy.Count > 0 && !fixedGroupBy.SequenceEqual(select.GroupBy))
+						{
+							select = new SelectExpression(
+								select.Alias,
+								select.Columns,
+								select.From,
+								select.Where,
+								select.OrderBy,
+								fixedGroupBy,
+								select.IsDistinct,
+								select.Skip,
+								select.Take,
+								select.IsReverse
+							);
+						}
+					}
+				}
+
+			return select;
+		}
+
+			private Expression FixGroupByExpression(Expression groupExpr, SelectExpression select, ProjectionExpression fromProj)
+			{
+				// If GROUP BY references a ColumnExpression, we need to ensure it references
+				// the correct underlying column, especially when the FROM is a projection with joins
+				if (groupExpr is ColumnExpression colExpr)
+				{
+					// Check if this column references the FROM projection's SELECT alias
+					// (This happens when ProjectColumns creates columns for the GROUP BY in QueryBinder.BindGroupBy)
+					if (colExpr.Alias == fromProj.Select.Alias)
+					{
+						// Try to find the corresponding column in the FROM projection's SELECT
+						// by matching the column name
+						var matchingColumn = fromProj.Select.Columns.FirstOrDefault(c => c.Name == colExpr.Name);
+						if (matchingColumn != null)
+						{
+							// Use the expression from the FROM projection's column directly
+							// This ensures we reference the actual underlying column (which might be from a joined table)
+							// rather than the intermediate projection column
+							
+							// If it's a ColumnExpression, we can use it as-is (it already has the correct alias)
+							// If it's a more complex expression, we use it directly
+							// BUT: Avoid returning a ProjectionExpression into a GROUP BY clause
+							if (!(matchingColumn.Expression is ProjectionExpression))
+							{
+								return matchingColumn.Expression;
+							}
+						}
+					}
+				}
+
+				return groupExpr;
 			}
 		}
 	}

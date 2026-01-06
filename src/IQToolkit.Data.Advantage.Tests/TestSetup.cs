@@ -3,6 +3,7 @@ using System.IO;
 using System.Data;
 using Advantage.Data.Provider;
 using Xunit;
+using System.Runtime.InteropServices;
 
 // Disable parallel execution to avoid file locking issues with DBF files
 [assembly: CollectionBehavior(DisableTestParallelization = true)]
@@ -11,13 +12,40 @@ namespace IQToolkit.Data.Advantage.Tests
 {
     public static class TestSetup
     {
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        public static extern IntPtr LoadLibrary(string lpFileName);
+
         public static string DataDir = Path.Combine(Path.GetTempPath(), "IQToolkit_Advantage_Tests");
         private static object _lock = new object();
+        private static bool _libraryLoaded = false;
 
         public static void EnsureDatabase()
         {
             lock (_lock)
             {
+                if (!_libraryLoaded)
+                {
+                    // Ensure the unmanaged ACE library is loaded.
+                    // The provider needs this to communicate with Advantage Local Server.
+                    string dllName = IntPtr.Size == 8 ? "ace64.dll" : "ace32.dll";
+                    string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, dllName);
+                    
+                    if (File.Exists(path))
+                    {
+                        IntPtr handle = LoadLibrary(path);
+                        if (handle == IntPtr.Zero)
+                        {
+                            // If failed to load by full path, try just the filename (standard search path)
+                            LoadLibrary(dllName);
+                        }
+                    }
+                    else
+                    {
+                         LoadLibrary(dllName);
+                    }
+                    _libraryLoaded = true;
+                }
+
                 // Always recreate to ensure clean state for each test class
 
                 if (Directory.Exists(DataDir))

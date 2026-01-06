@@ -1,71 +1,79 @@
 ﻿// See https://aka.ms/new-console-template for more information
+using System;
+using System.Linq;
+using System.Reflection;
+using System.Text;
+using System.Data;
+using System.Data.Common;
 using IQToolkit.Data.Advantage;
 using PCSLib.Data.DBF;
 using PCSLib.Data.DTO;
 using PCSLib.Data.Enums;
-using System.Reflection;
-using System.Text;
 using Gridify;
 using WebServices.Mapperly;
 
+namespace Test.Advantage.Core
+{
+    class Program
+    {
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Auto)]
+        public static extern IntPtr LoadLibrary(string lpFileName);
 
-#if NET5_0_OR_GREATER
-Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-#endif
-
-Console.WriteLine("Hello, World!");
-
-        var type = typeof(LocGen);
-        Console.WriteLine($"Type: {type.FullName}");
-        
-        var props = type.GetProperties();
-        foreach (var p in props)
+        static void Main(string[] args)
         {
-             Console.WriteLine($"Property: {p.Name}, Type: {p.PropertyType}");
+#if NET5_0_OR_GREATER
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+#endif
+            Console.WriteLine($"Is64BitProcess: {Environment.Is64BitProcess}");
+            string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ace64.dll");
+            IntPtr handle = LoadLibrary(path);
+            Console.WriteLine($"LoadLibrary(ace64.dll): {handle}, Error: {System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
+
+            string connectionString = "Data Source=C:\\PGS\\LOCA RECEPTION\\Data\\Lyon;ServerType=remote;TableType=CDX;TrimTrailingSpaces=True;CharType=OEM";
+
+            var provider = new AdvantageQueryProvider(connectionString);
+            provider.Log = Console.Out;
+            provider.EnableQueryTiming = true;
+
+            Console.WriteLine("Test 1: Distinct with Navigation Property (x.Secteur.Libelle)");
+            try 
+            {
+                var resultsDevis = provider.GetTable<LocClt>()
+                    .Select(x => x.Secteur.Libelle)
+                    .Distinct();
+
+                Console.WriteLine($"Found {resultsDevis.Count()} distinct Secteur values");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Test 1 Failed: {ex.Message}");
+                Console.WriteLine(ex.StackTrace);
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("Test 2: Distinct without Navigation Property (x.CodeSecteur)");
+            try
+            {
+                var resultsSimple = provider.GetTable<LocClt>()
+                    .Select(x => x.CodeSecteur)
+                    .Distinct();
+
+                Console.WriteLine($"Found {resultsSimple.Count()} distinct CodeSecteur values");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Test 2 Failed: {ex.Message}");
+                Console.WriteLine(ex.StackTrace);
+            }
+            
+            //Console.ReadLine();
         }
+    }
 
-
-string connectionString = "Data Source=C:\\PGS\\LOCA RECEPTION\\Data\\Lyon;ServerType=remote;TableType=CDX;TrimTrailingSpaces=True;CharType=OEM";
-
-var provider = new AdvantageQueryProvider(connectionString);
-provider.Log = Console.Out;
-provider.EnableQueryTiming = true;
-
-
-// var configuration = new MapperConfiguration(cfg =>
-// {
-// 	// Add all Profiles from the Assembly containing this Type
-// 	cfg.AddMaps(typeof(LocationProfile));
-// });
-// Build the query without executing it yet
-var locgen = provider.GetTable<LocPer>()
-				.ProjectToDto()
-				.ApplyFiltering("dtModification >= 2022-12-16T13:00:00")
-				.FirstOrDefault();
-
-
-// var locgenproject = provider.GetTable<LocGen>()
-// 	.Where(l => l.NumeroLocation == "210030246")
-// 	.ProjectTo<Location>(configuration)
-// 	.First();
-
-Console.WriteLine(locgen?.DTModification);
-// Console.WriteLine(locgenproject.DTDepartMateriel);
-
-// Print the full execution plan for diagnostics
-try
-{
- //var planText = provider.GetQueryPlan(queryEntreprise.Expression);
- //Console.WriteLine("=== Execution Plan ===");
- //Console.WriteLine(planText);
- //Console.WriteLine("======================");
+    public class LocCltProjection
+    {
+		public string CodeClient { get; set; }
+		public string SecteurCode { get; set; }
+        public string SecteurLibelle { get; set; }
+    }
 }
-catch (Exception ex)
-{
- Console.WriteLine($"Failed to get query plan: {ex}");
-}
-
-// Execute the query
-//var resultsNormal = queryEntreprise.ToList();
-
-//Console.ReadLine();

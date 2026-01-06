@@ -200,26 +200,14 @@ namespace Test.Advantage
 			provider.Log = Console.Out;
 			provider.EnableQueryTiming = true;
 
-			var resultsDevis = provider.GetTable<LocArt>()
-				.Where(la => la.MODE == LocArtMode.Devis)
-				.Take(10)
-				.ToList();
+			var resultsDevis = provider.GetTable<LocClt>()
+         		.Select(x => x.Secteur.Libelle) // This implies a JOIN toLocCode
+             	.Distinct();   
 
-			Console.WriteLine($"Found {resultsDevis.Count} records with MODE = Devis ('D' character)");
+			Console.WriteLine($"Found {resultsDevis.Count} distinct Secteur values");
 			foreach (var item in resultsDevis)
 			{
-				Console.WriteLine($"MODE: {item.MODE} | Enum Name: {Enum.GetName(typeof(LocArtMode), item.MODE)} | Value: {(ushort)item.MODE}");
-			}
-
-			var resultsNormal = provider.GetTable<LocArt>()
-				.Where(la => la.MODE == LocArtMode.Normal)
-				.Take(10)
-				.ToList();
-
-			Console.WriteLine($"\nFound {resultsNormal.Count} records with MODE = Normal (space character)");
-			foreach (var item in resultsNormal)
-			{
-				Console.WriteLine($"MODE: {item.MODE} | Enum Name: {Enum.GetName(typeof(LocArtMode), item.MODE)} | Value: {(ushort)item.MODE} | LIBELLE2: {(item.LIBELLE2 == null ? "NULL" : item.LIBELLE2 == "" ? "''" : $"'{item.LIBELLE2}' (len={item.LIBELLE2.Length})")}");
+				Console.WriteLine($"Secteur: {item}");
 			}
 
 			//Console.ReadKey();
