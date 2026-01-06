@@ -654,6 +654,51 @@ namespace IQToolkit.Data.Advantage
 				this.Write(" THEN -1 ELSE 1 END)");
 				return m;
 			}
+            else if (m.Method.Name == "Contains")
+            {
+                if (m.Method.DeclaringType != typeof(string))
+                {
+                    Expression source = null;
+                    Expression item = null;
+
+                    if (m.Method.IsStatic && m.Arguments.Count == 2)
+                    {
+                        source = m.Arguments[0];
+                        item = m.Arguments[1];
+                    }
+                    else if (!m.Method.IsStatic && m.Arguments.Count == 1)
+                    {
+                        source = m.Object;
+                        item = m.Arguments[0];
+                    }
+
+                    if (source != null && item != null)
+                    {
+                        if (source.NodeType == ExpressionType.Constant)
+                        {
+                            System.Collections.IEnumerable values = ((ConstantExpression)source).Value as System.Collections.IEnumerable;
+                            if (values != null)
+                            {
+                                this.Visit(item);
+                                this.Write(" IN (");
+                                bool first = true;
+                                foreach (object val in values)
+                                {
+                                    if (!first) this.Write(", ");
+                                    this.WriteValue(val);
+                                    first = false;
+                                }
+                                if (first)
+                                {
+                                    this.Write("NULL");
+                                }
+                                this.Write(")");
+                                return m;
+                            }
+                        }
+                    }
+                }
+            }
 			return base.VisitMethodCall(m);
 		}
 	}
