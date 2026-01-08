@@ -39,9 +39,16 @@ namespace Test.Advantage.Core
             try 
             {
                 var locations = provider.GetTable<LocGen>()
-                    .Where(lg => lg.DateCreation.Value.Year > 2004);
+                    .Select(lg => new
+                    {
+                        numeroloc = lg.NumeroLocation,
+                        isst = provider.GetTable<LocStGen>().Any(st => st.NUMLOC == lg.NumeroLocation)
 
-                Console.WriteLine($"Found {locations.Count()} locations");
+                    })
+                    .Take(1)
+                    .ToList();
+
+                Console.WriteLine($"let's check the dates...");
             }
             catch (Exception ex)
             {

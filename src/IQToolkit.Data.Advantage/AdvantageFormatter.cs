@@ -246,6 +246,33 @@ namespace IQToolkit.Data.Advantage
 						this.Write("SECOND("); this.Visit(m.Expression); this.Write(")"); return m;
 				}
 			}
+			// Handle nullable DateTime/DateTimeOffset member access
+			// After NullableValueRemover runs, we might have DateTime members on nullable expressions
+			else if (TypeHelper.IsNullableType(m.Expression?.Type))
+			{
+				var underlyingType = TypeHelper.GetNonNullableType(m.Expression.Type);
+				
+				// Check if the member is from DateTime or DateTimeOffset
+				if ((underlyingType == typeof(DateTime) || underlyingType == typeof(DateTimeOffset)) &&
+				    (m.Member.DeclaringType == typeof(DateTime) || m.Member.DeclaringType == typeof(DateTimeOffset)))
+				{
+					switch (m.Member.Name)
+					{
+						case "Day":
+							this.Write("DAY("); this.Visit(m.Expression); this.Write(")"); return m;
+						case "Month":
+							this.Write("MONTH("); this.Visit(m.Expression); this.Write(")"); return m;
+						case "Year":
+							this.Write("YEAR("); this.Visit(m.Expression); this.Write(")"); return m;
+						case "Hour":
+							this.Write("HOUR("); this.Visit(m.Expression); this.Write(")"); return m;
+						case "Minute":
+							this.Write("MINUTE("); this.Visit(m.Expression); this.Write(")"); return m;
+						case "Second":
+							this.Write("SECOND("); this.Visit(m.Expression); this.Write(")"); return m;
+					}
+				}
+			}
 			return base.VisitMemberAccess(m);
 		}
 

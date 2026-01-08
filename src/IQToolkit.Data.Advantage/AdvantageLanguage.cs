@@ -87,7 +87,7 @@ namespace IQToolkit.Data.Advantage
 
             /// <summary>
             /// Removes .Value property access on Nullable types to allow SQL generator to handle nullable columns directly.
-            /// Transforms: nullable.Value.Year => YEAR(nullable) via custom expression
+            /// Transforms: nullable.Value.Year => marker that formatter can understand
             /// This is necessary because SQL doesn't have a concept of .Value - you access properties directly on nullable columns.
             /// </summary>
             class NullableValueRemover : DbExpressionVisitor
@@ -115,21 +115,36 @@ namespace IQToolkit.Data.Advantage
                             // Visit the nullable expression (e.g., lg.DateCreation)
                             var visitedNullable = this.Visit(inner.Expression);
                             
-                            // Create a new MemberExpression that skips the .Value access
-                            // We reconstruct: nullable.Value.Year => MemberAccess(nullable, Year)
-                            // But we need to handle the type correctly. The original m has the right member,
-                            // we just need to point it to the nullable expression instead of nullable.Value
-                            
-                            // Use reflection to create a MemberExpression with updated expression
-                            // This bypasses the type checking in Expression.MakeMemberAccess
-                            return Expression.MakeMemberAccess(
-                                Expression.Convert(visitedNullable, underlyingType),
-                                m.Member);
+                            // Create a new MemberExpression with the nullable expression but keep the original member
+                            // This will have a type mismatch, but the formatter will handle it specially
+                            // We use the internal constructor via reflection to bypass validation
+                            return CreateMemberAccess(visitedNullable, m.Member, m.Type);
                         }
                     }
 
                     return base.VisitMemberAccess(m);
                 }
+
+                private static Expression CreateMemberAccess(Expression expression, MemberInfo member, Type type)
+                {
+					var propertyInfo = (PropertyInfo)member;
+
+					// If the expression type doesn't match the property's declaring type,
+					// we need to convert (e.g., DateTime? -> DateTime)
+					if (expression.Type != propertyInfo.DeclaringType &&
+						TypeHelper.IsNullableType(expression.Type))
+					{
+						var underlyingType = TypeHelper.GetNonNullableType(expression.Type);
+						if (underlyingType == propertyInfo.DeclaringType)
+						{
+							// Add a Convert node to cast DateTime? to DateTime
+							// This is what the C# compiler does for nullable.Value
+							expression = Expression.Convert(expression, underlyingType);
+						}
+					}
+
+					return Expression.Property(expression, propertyInfo);
+				}
             }
 
             class OrderByRemover : DbExpressionVisitor
