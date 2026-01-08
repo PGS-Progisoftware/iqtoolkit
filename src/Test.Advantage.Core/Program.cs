@@ -35,45 +35,19 @@ namespace Test.Advantage.Core
             provider.Log = Console.Out;
             provider.EnableQueryTiming = true;
 
-            Console.WriteLine("Test 1: Distinct with Navigation Property (x.Secteur.Libelle)");
+            Console.WriteLine("test : filter on nullable");
             try 
             {
-                var resultsDevis = provider.GetTable<LocClt>()
-                    .Select(x => x.Secteur.Libelle)
-                    .Distinct();
+                var locations = provider.GetTable<LocGen>()
+                    .Where(lg => lg.DateCreation.Value.Year > 2004);
 
-                Console.WriteLine($"Found {resultsDevis.Count()} distinct Secteur values");
+                Console.WriteLine($"Found {locations.Count()} locations");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Test 1 Failed: {ex.Message}");
                 Console.WriteLine(ex.StackTrace);
             }
-
-            Console.WriteLine();
-            Console.WriteLine("Test 2: Distinct without Navigation Property (x.CodeSecteur)");
-            try
-            {
-                var resultsSimple = provider.GetTable<LocClt>()
-                    .Select(x => x.CodeSecteur)
-                    .Distinct();
-
-                Console.WriteLine($"Found {resultsSimple.Count()} distinct CodeSecteur values");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Test 2 Failed: {ex.Message}");
-                Console.WriteLine(ex.StackTrace);
-            }
-            
-            //Console.ReadLine();
         }
-    }
-
-    public class LocCltProjection
-    {
-		public string CodeClient { get; set; }
-		public string SecteurCode { get; set; }
-        public string SecteurLibelle { get; set; }
     }
 }

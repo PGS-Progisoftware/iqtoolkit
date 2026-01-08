@@ -47,6 +47,10 @@ namespace IQToolkit.Data.Advantage
                 // Composite field rewriting is handled by AdvantageMapper.Translate
                 // so we don't need to do it here.
                 
+                // FIRST: Handle nullable .Value member access before any other transformations
+                // This converts patterns like nullable.Value.Year => nullable.Year
+                expression = NullableValueRemover.Remove(expression);
+                
                 // Optimize DISTINCT queries with navigation properties
                 // When SingletonProjectionRewriter refuses to convert relationships to server-side joins
                 // (because IsDistinct=true), we end up selecting all columns from parent tables.
@@ -79,6 +83,53 @@ namespace IQToolkit.Data.Advantage
             {
                 // Use the custom AdvantageFormatter to ensure positional parameters
                 return AdvantageFormatter.Format(expression, this.Language);
+            }
+
+            /// <summary>
+            /// Removes .Value property access on Nullable types to allow SQL generator to handle nullable columns directly.
+            /// Transforms: nullable.Value.Year => YEAR(nullable) via custom expression
+            /// This is necessary because SQL doesn't have a concept of .Value - you access properties directly on nullable columns.
+            /// </summary>
+            class NullableValueRemover : DbExpressionVisitor
+            {
+                public static Expression Remove(Expression expression)
+                {
+                    return new NullableValueRemover().Visit(expression);
+                }
+
+                protected override Expression VisitMemberAccess(MemberExpression m)
+                {
+                    // Handle pattern: nullable.Value.SomeMember
+                    // For example: lg.DateCreation.Value.Year where DateCreation is DateTime?
+                    if (m.Expression is MemberExpression inner &&
+                        inner.Member.Name == "Value" &&
+                        TypeHelper.IsNullableType(inner.Expression.Type))
+                    {
+                        // Get the underlying non-nullable type (e.g., DateTime from DateTime?)
+                        var underlyingType = TypeHelper.GetNonNullableType(inner.Expression.Type);
+                        
+                        // Check if the member being accessed (e.g., Year) exists on the underlying type (DateTime)
+                        if (m.Member.DeclaringType == underlyingType ||
+                            (m.Member.DeclaringType != null && underlyingType.IsAssignableFrom(m.Member.DeclaringType)))
+                        {
+                            // Visit the nullable expression (e.g., lg.DateCreation)
+                            var visitedNullable = this.Visit(inner.Expression);
+                            
+                            // Create a new MemberExpression that skips the .Value access
+                            // We reconstruct: nullable.Value.Year => MemberAccess(nullable, Year)
+                            // But we need to handle the type correctly. The original m has the right member,
+                            // we just need to point it to the nullable expression instead of nullable.Value
+                            
+                            // Use reflection to create a MemberExpression with updated expression
+                            // This bypasses the type checking in Expression.MakeMemberAccess
+                            return Expression.MakeMemberAccess(
+                                Expression.Convert(visitedNullable, underlyingType),
+                                m.Member);
+                        }
+                    }
+
+                    return base.VisitMemberAccess(m);
+                }
             }
 
             class OrderByRemover : DbExpressionVisitor
