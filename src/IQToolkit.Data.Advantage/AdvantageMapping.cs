@@ -69,6 +69,12 @@ namespace IQToolkit.Data.Advantage
 
 				// Step 1: Rewrite composite field comparisons (e.g., DTDEP > x) into date/time logic
 				expression = AdvantageCompositeFieldRewriter.Rewrite(expression);
+				
+				// Step 1b: Expand composite fields in SELECT projections BEFORE binding
+				// This is critical: composite fields must be replaced with their underlying columns
+				// BEFORE QueryBinder creates the projection, otherwise the composite field reference
+				// gets baked into the query tree and SqlFormatter can't handle it.
+				expression = CompositeFieldProjectionExpander.Expand(expression, _mapping);
 
 				// Step 2: Normal translation (binding, optimization, etc.)
 				expression = base.Translate(expression);
@@ -112,45 +118,57 @@ namespace IQToolkit.Data.Advantage
                     if (basicMapping == null)
                         return base.VisitMemberAccess(m);
 
-                    // Check if accessing a member on a TableExpression
-                    if (m.Expression is TableExpression tex)
+                // Check if accessing a member on a TableExpression
+                if (m.Expression is TableExpression tex)
+                {
+                    // DON'T columnize composite fields - let CompositeFieldExpander handle them
+                    if (HasCompositeFieldAttribute(m.Member))
                     {
-                        if (basicMapping.IsColumn(tex.Entity, m.Member))
-                        {
+                        return base.VisitMemberAccess(m);
+                    }
+                    
+                    if (basicMapping.IsColumn(tex.Entity, m.Member))
+                    {
+                        return new ColumnExpression(
+                            TypeHelper.GetMemberType(m.Member),
+                            mapper.GetColumnType(tex.Entity, m.Member),
+                            tex.Alias,
+                            basicMapping.GetColumnName(tex.Entity, m.Member)
+                        );
+                    }
+                }
+                // Check if accessing a member on an EntityExpression
+                else if (m.Expression is EntityExpression ex)
+                {
+                     // DON'T columnize composite fields - let CompositeFieldExpander handle them
+                     if (HasCompositeFieldAttribute(m.Member))
+                     {
+                         return base.VisitMemberAccess(m);
+                     }
+                     
+                     if (ex.Expression is AliasedExpression aex)
+                     {
+                         if (basicMapping.IsColumn(ex.Entity, m.Member))
+                         {
                             return new ColumnExpression(
                                 TypeHelper.GetMemberType(m.Member),
-                                mapper.GetColumnType(tex.Entity, m.Member),
-                                tex.Alias,
-                                basicMapping.GetColumnName(tex.Entity, m.Member)
+                                mapper.GetColumnType(ex.Entity, m.Member),
+                                aex.Alias,
+                                basicMapping.GetColumnName(ex.Entity, m.Member)
                             );
-                        }
-                    }
-                    // Check if accessing a member on an EntityExpression
-                    else if (m.Expression is EntityExpression ex)
-                    {
-                         if (ex.Expression is AliasedExpression aex)
-                         {
-                             if (basicMapping.IsColumn(ex.Entity, m.Member))
-                             {
-                                return new ColumnExpression(
-                                    TypeHelper.GetMemberType(m.Member),
-                                    mapper.GetColumnType(ex.Entity, m.Member),
-                                    aex.Alias,
-                                    basicMapping.GetColumnName(ex.Entity, m.Member)
-                                );
-                             }
                          }
-                         else 
+                     }
+                     else 
+                     {
+                         var memberExpr = FindMemberInEntity(ex.Expression, m.Member);
+                         if (memberExpr != null)
                          {
-                             var memberExpr = FindMemberInEntity(ex.Expression, m.Member);
-                             if (memberExpr != null)
-                             {
-                                 return this.Visit(memberExpr);
-                             }
+                             return this.Visit(memberExpr);
                          }
-                    }
+                     }
+                }
 
-                    return base.VisitMemberAccess(m);
+                return base.VisitMemberAccess(m);
                 }
 
                 private Expression FindMemberInEntity(Expression entityExpression, MemberInfo member)
@@ -735,6 +753,80 @@ namespace IQToolkit.Data.Advantage
                         Expression.Quote(Expression.Lambda(keyAccess, groupParam))
                     );
 				}
+			}
+		}
+
+		/// <summary>
+		/// Expands composite fields in SELECT projections BEFORE binding.
+		/// This rewrites locgen.DTDepartMateriel to locgen.DATEDEP so the projection
+		/// binds to the actual database column, not the virtual composite field.
+		/// Only rewrites when inside a MemberInit or New expression (DTO creation).
+		/// </summary>
+		private class CompositeFieldProjectionExpander : ExpressionVisitor
+		{
+			private readonly AdvantageMapping mapping;
+			private bool insideProjection = false;
+
+			private CompositeFieldProjectionExpander(AdvantageMapping mapping)
+			{
+				this.mapping = mapping;
+			}
+
+			public static Expression Expand(Expression expression, AdvantageMapping mapping)
+			{
+				return new CompositeFieldProjectionExpander(mapping).Visit(expression);
+			}
+
+			protected override Expression VisitMemberInit(MemberInitExpression node)
+			{
+				// We're inside a projection (DTO creation)
+				bool wasInside = insideProjection;
+				insideProjection = true;
+				var result = base.VisitMemberInit(node);
+				insideProjection = wasInside;
+				return result;
+			}
+
+			protected override NewExpression VisitNew(NewExpression node)
+			{
+				// We're inside a projection (anonymous type or DTO creation)
+				bool wasInside = insideProjection;
+				insideProjection = true;
+				var result = base.VisitNew(node);
+				insideProjection = wasInside;
+				return result;
+			}
+
+			protected override Expression VisitMemberAccess(MemberExpression m)
+			{
+				// Visit the source first
+				var source = this.Visit(m.Expression);
+
+				// Only rewrite composite fields when inside a projection
+				if (insideProjection && HasCompositeFieldAttribute(m.Member))
+				{
+					// Get the underlying date column
+					var attr = GetCompositeFieldAttribute(m.Member);
+					if (attr != null && m.Expression != null)
+					{
+						var entityType = m.Expression.Type;
+						var dateMember = (MemberInfo)entityType.GetProperty(attr.DateMember) ?? 
+						                 entityType.GetField(attr.DateMember);
+
+						if (dateMember != null)
+						{
+							// Rewrite to access the date column instead of the composite
+							// This ensures the projection SELECT uses DATEDEP, not DTDepartMateriel
+							return Expression.MakeMemberAccess(source, dateMember);
+						}
+					}
+				}
+
+				// Reconstruct if source changed
+				if (source != m.Expression)
+					return Expression.MakeMemberAccess(source, m.Member);
+
+				return m;
 			}
 		}
 

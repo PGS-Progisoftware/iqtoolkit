@@ -155,9 +155,9 @@ namespace IQToolkit.Data.Advantage
 				}
 			}
 			
-			// Handle composite field access in projections
-			// Don't expand here - just rewrite to access the date member
-			// The CompositeFieldExpander will handle full expansion later
+			// Handle composite field access in projections  
+			// DON'T rewrite here - let CompositeFieldExpander handle it
+			// The issue is that CompositeFieldExpander can only expand when the member HAS the attribute
 			if (IsCompositeField(m.Member, out var dateField, out var timeField))
 			{
 				// In projections, we can't do the full expansion here
