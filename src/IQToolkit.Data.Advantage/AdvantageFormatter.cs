@@ -760,6 +760,45 @@ namespace IQToolkit.Data.Advantage
 			return base.VisitMethodCall(m);
 		}
 
+		protected override Expression VisitConditional(ConditionalExpression c)
+		{
+			// Advantage SQL supports CASE WHEN syntax
+			if (this.IsPredicate(c.Test))
+			{
+				this.Write("(CASE WHEN ");
+				this.VisitPredicate(c.Test);
+				this.Write(" THEN ");
+				this.VisitValue(c.IfTrue);
+				Expression ifFalse = c.IfFalse;
+				while (ifFalse != null && ifFalse.NodeType == ExpressionType.Conditional)
+				{
+					ConditionalExpression fc = (ConditionalExpression)ifFalse;
+					this.Write(" WHEN ");
+					this.VisitPredicate(fc.Test);
+					this.Write(" THEN ");
+					this.VisitValue(fc.IfTrue);
+					ifFalse = fc.IfFalse;
+				}
+				if (ifFalse != null)
+				{
+					this.Write(" ELSE ");
+					this.VisitValue(ifFalse);
+				}
+				this.Write(" END)");
+			}
+			else
+			{
+				this.Write("(CASE ");
+				this.VisitValue(c.Test);
+				this.Write(" WHEN 0 THEN ");
+				this.VisitValue(c.IfFalse);
+				this.Write(" ELSE ");
+				this.VisitValue(c.IfTrue);
+				this.Write(" END)");
+			}
+			return c;
+		}
+
 		protected override void WriteColumns(ReadOnlyCollection<ColumnDeclaration> columns)
 		{
 			if (columns.Count > 0)
