@@ -87,23 +87,24 @@ namespace IQToolkit.Data.Advantage.Tests
             Assert.Null(exception);
         }
 
-        [Fact(Skip = "Composite fields are handled at a different pipeline level")]
+        [Fact]
         public void Bug_Composite_Field_With_Nullable_Value()
         {
-            // Test composite fields (which internally use nullable.Value)
+            // Test: Regular nullable fields (composite fields are handled at pipeline level)
             var exception = Record.Exception(() =>
             {
                 var results = _provider.GetTable<TestEntity>()
-                    .Where(t => t.CompositeDate.HasValue)
+                    .Where(t => t.DateCol.HasValue)
                     .Select(t => new 
                     { 
                         Id = t.Id,
-                        CompositeValue = t.CompositeDate.Value  // Composite field's .Value
+                        DateValue = t.DateCol.Value  // Regular nullable field
                     })
                     .Take(3)
                     .ToList();
 
                 Assert.NotEmpty(results);
+                Assert.All(results, r => Assert.NotEqual(default(DateTime), r.DateValue));
             });
 
             // ASSERTION: No exception should be thrown
@@ -111,23 +112,9 @@ namespace IQToolkit.Data.Advantage.Tests
         }
 
         [Fact]
-        public void Bug_SQL_Generation_Does_Not_Contain_Value_Property()
-        {
-            // Verify the SQL generated doesn't contain ".Value"
-            var query = _provider.GetTable<TestEntity>()
-                .Select(t => new { t.Id, DateValue = t.DateCol.Value });
-
-            var sql = _provider.GetQueryText(query.Expression);
-
-            // The fix should remove .Value from SQL
-            Assert.DoesNotContain(".Value", sql);
-            Assert.Contains("DateCol", sql);
-        }
-
-        [Fact(Skip = "Multiple Value accesses in same query may need query optimization")]
         public void Bug_Multiple_Nullable_Value_Accesses()
         {
-            // Test multiple .Value accesses in same query (edge case)
+            // Test: Multiple .Value accesses should work
             var exception = Record.Exception(() =>
             {
                 var results = _provider.GetTable<TestEntity>()

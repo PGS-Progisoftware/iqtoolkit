@@ -194,18 +194,24 @@ namespace IQToolkit.Data.Advantage.Tests
             Assert.Equal(2, results.Count); // Order on Jan 1 and Feb 1
         }
 
-        [Fact(Skip = "Date range test returns unexpected count - test data or date range needs review")]
+        [Fact]
         public void DateTime_Last_N_Days()
         {
             // Test: Dynamic date range (simulating "last 30 days" pattern)
             var endDate = new DateTime(2023, 2, 1);
-            var startDate = endDate.AddDays(-30);
+            var startDate = endDate.AddDays(-30);  // Jan 2, 2023
+            
+            // Orders in test data:
+            // - Order 101: Jan 1, 2023 (BEFORE startDate of Jan 2)
+            // - Order 103: Jan 15, 2023 (within range)
+            // - Order 102: Feb 1, 2023 (within range, at endDate)
             
             var results = _provider.GetTable<Order>()
                 .Where(o => o.OrderDate >= startDate && o.OrderDate <= endDate)
                 .ToList();
 
-            Assert.Equal(3, results.Count); // All orders within range
+            // Only orders on Jan 15 and Feb 1 are in range (Jan 2 to Feb 1 inclusive)
+            Assert.Equal(2, results.Count);
         }
 
         [Fact]
@@ -307,30 +313,38 @@ namespace IQToolkit.Data.Advantage.Tests
 
         #region Date Grouping Tests
 
-        [Fact(Skip = "GROUP BY Year currently returns unexpected count - needs investigation")]
+        [Fact(Skip = "GROUP BY YEAR() returns 3 groups instead of 1 - Advantage SQL Engine bug or query translation issue")]
         public void DateTime_GroupBy_Year()
         {
             // Test: GROUP BY YEAR(date)
+            // Expected: 1 group (all orders in 2023)
+            // Actual: 3 groups (one per order)
+            // This appears to be a GROUP BY translation issue or Advantage SQL Engine behavior
             var results = _provider.GetTable<Order>()
                 .GroupBy(o => o.OrderDate.Year)
                 .Select(g => new { Year = g.Key, Count = g.Count() })
                 .ToList();
 
+            // All orders are in 2023
             Assert.Single(results);
             Assert.Equal(2023, results[0].Year);
             Assert.Equal(3, results[0].Count);
         }
 
-        [Fact(Skip = "GROUP BY Month currently returns unexpected count - needs investigation")]
+        [Fact(Skip = "GROUP BY MONTH() returns 3 groups instead of 2 - Advantage SQL Engine bug or query translation issue")]
         public void DateTime_GroupBy_Month()
         {
             // Test: GROUP BY MONTH(date)
+            // Expected: 2 groups (January and February)
+            // Actual: 3 groups (one per order)
             var results = _provider.GetTable<Order>()
                 .GroupBy(o => o.OrderDate.Month)
                 .Select(g => new { Month = g.Key, Count = g.Count() })
                 .OrderBy(x => x.Month)
                 .ToList();
 
+            // January: orders 101 and 103 (2 orders)
+            // February: order 102 (1 order)
             Assert.Equal(2, results.Count);
             Assert.Equal(1, results[0].Month); // January
             Assert.Equal(2, results[0].Count);
@@ -338,10 +352,12 @@ namespace IQToolkit.Data.Advantage.Tests
             Assert.Equal(1, results[1].Count);
         }
 
-        [Fact(Skip = "GROUP BY with multiple properties needs query optimization review")]
+        [Fact(Skip = "GROUP BY with anonymous type returns 3 groups instead of 2 - query translation issue with composite keys")]
         public void DateTime_GroupBy_YearMonth()
         {
             // Test: GROUP BY multiple date parts
+            // Expected: 2 groups (2023-01 and 2023-02)
+            // Actual: 3 groups (one per order)
             var results = _provider.GetTable<Order>()
                 .GroupBy(o => new { o.OrderDate.Year, o.OrderDate.Month })
                 .Select(g => new 
@@ -355,10 +371,12 @@ namespace IQToolkit.Data.Advantage.Tests
                 .ThenBy(x => x.Month)
                 .ToList();
 
+            // 2023-01: orders 101 (100.00) and 103 (150.00) = 250.00
+            // 2023-02: order 102 (200.00) = 200.00
             Assert.Equal(2, results.Count);
             Assert.Equal(2023, results[0].Year);
             Assert.Equal(1, results[0].Month);
-            Assert.Equal(250.00m, results[0].TotalAmount); // 100 + 150
+            Assert.Equal(250.00m, results[0].TotalAmount);
         }
 
         #endregion
