@@ -1,6 +1,7 @@
 using IQToolkit.Data.Common;
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Linq.Expressions;
 
 namespace IQToolkit.Data.Advantage
@@ -727,6 +728,38 @@ namespace IQToolkit.Data.Advantage
                 }
             }
 			return base.VisitMethodCall(m);
+		}
+
+		protected override void WriteColumns(ReadOnlyCollection<ColumnDeclaration> columns)
+		{
+			if (columns.Count > 0)
+			{
+				for (int i = 0, n = columns.Count; i < n; i++)
+				{
+					ColumnDeclaration column = columns[i];
+					if (i > 0)
+					{
+						this.Write(", ");
+					}
+					ColumnExpression c = this.VisitValue(column.Expression) as ColumnExpression;
+					if (!string.IsNullOrEmpty(column.Name) && (c == null || c.Name != column.Name))
+					{
+						this.Write(" ");
+						this.WriteAsColumnName(column.Name);
+					}
+				}
+			}
+			else
+			{
+				// Advantage SQL doesn't understand NULL in EXISTS subqueries
+				// Use 1 instead (or any non-null constant)
+				this.Write("1 ");
+				if (this.IsNested)
+				{
+					this.WriteAsColumnName("tmp");
+					this.Write(" ");
+				}
+			}
 		}
 	}
 }
