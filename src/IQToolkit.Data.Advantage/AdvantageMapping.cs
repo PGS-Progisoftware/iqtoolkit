@@ -754,38 +754,137 @@ namespace IQToolkit.Data.Advantage
 			{
 				var source = this.Visit(m.Expression);
 				
-				if (source != null && 
-				    source.NodeType == (ExpressionType)DbExpressionType.Entity && 
-				  HasCompositeFieldAttribute(m.Member))
+				// PRIORITY 1: Handle property access on composite.Value (e.g., composite.Value.Date)
+				// This is the DevExpress pattern: .DATEDEP.Value.Date where DATEDEP is a projected composite field
+				if (source != null && source.NodeType == ExpressionType.MemberAccess)
 				{
-					var entityExpr = (EntityExpression)source;
-					var attr = GetCompositeFieldAttribute(m.Member);
+					var sourceMember = (MemberExpression)source;
 					
-					var dateMember = entityExpr.Entity.StaticType.GetProperty(attr.DateMember) ?? 
-						(MemberInfo)entityExpr.Entity.StaticType.GetField(attr.DateMember);
-					var timeMember = entityExpr.Entity.StaticType.GetProperty(attr.TimeMember) ?? 
-						(MemberInfo)entityExpr.Entity.StaticType.GetField(attr.TimeMember);
-					
-					var dateExpr = FindMemberInEntity(entityExpr.Expression, dateMember);
-					var timeExpr = FindMemberInEntity(entityExpr.Expression, timeMember);
-					
-					if (dateExpr != null && timeExpr != null)
+					// Check if source is accessing .Value on a nullable composite field
+					// Pattern: compositeField.Value.Date
+					if (sourceMember.Member.Name == "Value" && 
+					    sourceMember.Expression is MemberExpression innerMember &&
+					    TypeHelper.IsNullableType(innerMember.Type) &&
+					    HasCompositeFieldAttribute(innerMember.Member))
 					{
-						// Create a minimal entity with just the two columns, then access the composite field
-						var minimalEntity = Expression.MemberInit(
-							Expression.New(entityExpr.Entity.RuntimeType),
-							Expression.Bind(dateMember, dateExpr),
-							Expression.Bind(timeMember, timeExpr)
-						);
-						
-						return Expression.MakeMemberAccess(minimalEntity, m.Member);
+						// We need to expand the composite first, then apply both .Value and the property
+						var expanded = ExpandCompositeField(innerMember);
+						if (expanded != null)
+						{
+							// Apply .Value to the expanded composite
+							var withValue = Expression.MakeMemberAccess(expanded, sourceMember.Member);
+							// Then apply the final property (Date, Hour, etc.)
+							return Expression.MakeMemberAccess(withValue, m.Member);
+						}
 					}
+					
+					// Check if source is directly a composite field access  
+					// Pattern: compositeField.Date (without .Value - non-nullable composite)
+					if (HasCompositeFieldAttribute(sourceMember.Member))
+					{
+						// Expand composite, then apply the property
+						var expanded = ExpandCompositeField(sourceMember);
+						if (expanded != null)
+						{
+							return Expression.MakeMemberAccess(expanded, m.Member);
+						}
+					}
+				}
+				
+				// PRIORITY 2: Handle .Value access on Nullable<T>
+				// When accessing .Value on a nullable composite field, we need to check the underlying composite field first
+				if (m.Member.Name == "Value" && TypeHelper.IsNullableType(m.Expression?.Type))
+				{
+					var underlyingType = TypeHelper.GetNonNullableType(m.Expression.Type);
+					
+					// The source might be a composite field access
+					// e.g., locgen.DTDepartMateriel.Value where DTDepartMateriel is DateTime?
+					// We need to expand the composite field first, then handle the .Value
+					if (source != null && source.NodeType == ExpressionType.MemberAccess)
+					{
+						var innerMember = (MemberExpression)source;
+						if (HasCompositeFieldAttribute(innerMember.Member))
+						{
+							// Expand the composite field first
+							var expanded = ExpandCompositeField(innerMember);
+							if (expanded != null)
+							{
+								// Then access .Value on the expanded result
+								return Expression.MakeMemberAccess(expanded, m.Member);
+							}
+						}
+					}
+					
+					// Not a composite field, continue normally
+					if (source != m.Expression)
+						return Expression.MakeMemberAccess(source, m.Member);
+					return m;
+				}
+				
+				// PRIORITY 3: Handle direct composite field access
+				if (HasCompositeFieldAttribute(m.Member))
+				{
+					var expanded = ExpandCompositeField(m);
+					if (expanded != null)
+						return expanded;
+				}
+				
+				// PRIORITY 4: Handle composite field through entity expression
+				if (source != null && 
+			    source.NodeType == (ExpressionType)DbExpressionType.Entity && 
+			    HasCompositeFieldAttribute(m.Member))
+				{
+					var expanded = ExpandFromEntity((EntityExpression)source, m.Member);
+					if (expanded != null)
+						return expanded;
 				}
 				
 				if (source != m.Expression)
 					return Expression.MakeMemberAccess(source, m.Member);
-					
+				
 				return m;
+			}
+			
+			private Expression ExpandCompositeField(MemberExpression m)
+			{
+				// For composite fields accessed through entity expressions
+				if (m.Expression != null && m.Expression.NodeType == (ExpressionType)DbExpressionType.Entity)
+				{
+					var entityExpr = (EntityExpression)m.Expression;
+					return ExpandFromEntity(entityExpr, m.Member);
+				}
+				
+				// For other composite field accesses, we can't expand here
+				// They should have been rewritten by AdvantageCompositeFieldRewriter
+				return null;
+			}
+			
+			private Expression ExpandFromEntity(EntityExpression entityExpr, MemberInfo compositeMember)
+			{
+				var attr = GetCompositeFieldAttribute(compositeMember);
+				if (attr == null) return null;
+				
+				var dateMember = entityExpr.Entity.StaticType.GetProperty(attr.DateMember) ?? 
+					(MemberInfo)entityExpr.Entity.StaticType.GetField(attr.DateMember);
+				var timeMember = entityExpr.Entity.StaticType.GetProperty(attr.TimeMember) ?? 
+					(MemberInfo)entityExpr.Entity.StaticType.GetField(attr.TimeMember);
+				
+				var dateExpr = FindMemberInEntity(entityExpr.Expression, dateMember);
+				var timeExpr = FindMemberInEntity(entityExpr.Expression, timeMember);
+				
+				if (dateExpr != null && timeExpr != null)
+				{
+					// Create a minimal entity with just the two columns, then access the composite field
+					var minimalEntity = Expression.MemberInit(
+						Expression.New(entityExpr.Entity.RuntimeType),
+						Expression.Bind(dateMember, dateExpr),
+						Expression.Bind(timeMember, timeExpr)
+					);
+					
+					return Expression.MakeMemberAccess(minimalEntity, compositeMember);
+				}
+				
+				return null;
 			}
 			
 			private Expression FindMemberInEntity(Expression entityExpression, MemberInfo member)

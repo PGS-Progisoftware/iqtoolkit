@@ -78,8 +78,103 @@ namespace IQToolkit.Data.Advantage
 			return base.VisitBinary(node);
 		}
 
-		// VisitUnary and VisitMemberAccess removed to prevent incorrect rewriting of composite fields in projections.
-		// The CompositeFieldExpander handles projections correctly by expanding to the underlying columns.
+		protected override Expression VisitMemberAccess(MemberExpression m)
+		{
+			// First visit the expression part
+			var source = this.Visit(m.Expression);
+			
+			// Handle property access on .Value of nullable composite fields
+			// Example: locgen.DTDepartMateriel.Value.Date
+			// This is the DevExpress pattern that's causing the error
+			if (source is MemberExpression valueAccess &&
+			    valueAccess.Member.Name == "Value" &&
+			    valueAccess.Expression is MemberExpression compositeMember &&
+			    TypeHelper.IsNullableType(compositeMember.Type) &&
+			    IsCompositeField(compositeMember.Member, out var dateMemberName, out var timeMemberName))
+			{
+				// Pattern: composite.Value.Date
+				// We need to rewrite this to: underlyingDateColumn.Value.Date
+				
+				// The property being accessed on .Value (e.g., "Date", "Hour", etc.)
+				var property = m.Member;
+				
+				// Get the underlying date member from the entity
+				var entityType = compositeMember.Expression.Type;
+				var dateMember = (MemberInfo)entityType.GetProperty(dateMemberName) ?? 
+				                 entityType.GetField(dateMemberName);
+				
+				if (dateMember != null)
+				{
+					// Access the date column directly
+					var dateAccess = Expression.MakeMemberAccess(compositeMember.Expression, dateMember);
+					
+					// If the date column is nullable and we're accessing a property, 
+					// we need to add .Value first
+					if (TypeHelper.IsNullableType(dateAccess.Type))
+					{
+						// dateAccess is DateTime?, need to get .Value then apply property
+						var valueProperty = dateAccess.Type.GetProperty("Value");
+						var dateValue = Expression.MakeMemberAccess(dateAccess, valueProperty);
+						// Now apply the property access (e.g., .Date)
+						return Expression.MakeMemberAccess(dateValue, property);
+					}
+					else
+					{
+						// dateAccess is DateTime, apply property directly
+						return Expression.MakeMemberAccess(dateAccess, property);
+					}
+				}
+			}
+			
+			// Handle .Value access on nullable composite fields
+			// Example: locgen.DTDepartMateriel.Value
+			if (m.Member.Name == "Value" && 
+			    source is MemberExpression innerMember &&
+			    TypeHelper.IsNullableType(innerMember.Type) &&
+			    IsCompositeField(innerMember.Member, out var dateMemberName2, out var timeMemberName2))
+			{
+				// Rewrite composite.Value to underlying date column value
+				// Get the date member from the entity
+				var entityType = innerMember.Expression.Type;
+				var dateMember = (MemberInfo)entityType.GetProperty(dateMemberName2) ?? 
+				                 entityType.GetField(dateMemberName2);
+				
+				if (dateMember != null)
+				{
+					// Return access to the date column's .Value
+					var dateAccess = Expression.MakeMemberAccess(innerMember.Expression, dateMember);
+					// If nullable, return .Value, otherwise just the date
+					if (TypeHelper.IsNullableType(dateAccess.Type))
+					{
+						return Expression.MakeMemberAccess(dateAccess, m.Member); // m.Member is "Value"
+					}
+					else
+					{
+						return dateAccess; // Already non-nullable
+					}
+				}
+			}
+			
+			// Handle composite field access in projections
+			// Don't expand here - just rewrite to access the date member
+			// The CompositeFieldExpander will handle full expansion later
+			if (IsCompositeField(m.Member, out var dateField, out var timeField))
+			{
+				// In projections, we can't do the full expansion here
+				// Just pass through and let CompositeFieldExpander handle it
+				if (source != m.Expression)
+					return Expression.MakeMemberAccess(source, m.Member);
+			}
+			
+			// Reconstruct with visited source
+			if (source != m.Expression)
+				return Expression.MakeMemberAccess(source, m.Member);
+			
+			return m;
+		}
+
+		// VisitUnary removed to prevent incorrect rewriting of composite fields in projections.
+		// The CompositeFieldExpander handles projections correctly by expanding to the underlying columns
 
 
 		private static bool IsComparisonOperator(ExpressionType nodeType)

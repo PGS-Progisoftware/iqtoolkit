@@ -74,22 +74,6 @@ namespace IQToolkit.Data.Advantage.Tests
             Assert.All(results, r => Assert.True(r.Value > 15));
         }
 
-        [Fact(Skip = "Advantage SQL limitation: Parameters not allowed in CASE expressions within aggregate functions")]
-        public void SimpleConditional_WithCount()
-        {
-            // Test: Conditional expression with Count()
-            // Note: This hits an Advantage SQL limitation where parameters cannot be used in CASE within aggregates
-            var count = _provider.GetTable<TestEntity>()
-                .Select(t => new
-                {
-                    t.Id,
-                    Status = t.Value > 15 ? "High" : "Low"
-                })
-                .Count(r => r.Status == "High");
-
-            Assert.Equal(3, count);
-        }
-
         #endregion
 
         #region Chained Conditional Expression Tests
@@ -344,28 +328,6 @@ namespace IQToolkit.Data.Advantage.Tests
             Assert.Equal(3, count);
         }
 
-        [Fact(Skip = "Advantage SQL limitation: Parameters not allowed in CASE expressions within aggregate functions")]
-        public void ConditionalInGroupBy_WithCount()
-        {
-            // Test: GROUP BY with conditional expression
-            // Note: This hits an Advantage SQL limitation
-            var results = _provider.GetTable<TestEntity>()
-                .GroupBy(t => t.Value > 20 ? "High" : "Low")
-                .Select(g => new
-                {
-                    Category = g.Key,
-                    Count = g.Count()
-                })
-                .OrderBy(r => r.Category)
-                .ToList();
-
-            Assert.Equal(2, results.Count);
-            Assert.Equal("High", results[0].Category);
-            Assert.Equal(2, results[0].Count);  // Values 30.5 and 40.0
-            Assert.Equal("Low", results[1].Category);
-            Assert.Equal(2, results[1].Count);   // Values 10.5 and 20.0
-        }
-
         #endregion
 
         #region SQL Generation Validation Tests
@@ -462,25 +424,6 @@ namespace IQToolkit.Data.Advantage.Tests
 
             Assert.Equal(4, results.Count);
             Assert.All(results, r => Assert.Equal("Always", r.Result));
-        }
-
-        [Fact(Skip = "Advantage SQL limitation: Parameters not allowed in CASE expressions returning NULL")]
-        public void ConditionalReturningNull_HandlesCorrectly()
-        {
-            // Test: Conditional that can return null
-            // Note: This hits an Advantage SQL limitation
-            var results = _provider.GetTable<TestEntity>()
-                .Select(t => new
-                {
-                    t.Id,
-                    OptionalDate = t.Value > 20 ? t.DateCol : null
-                })
-                .ToList();
-
-            Assert.Equal(4, results.Count);
-            // Values > 20: 30.5 and 40.0 (2 records)
-            Assert.Equal(2, results.Count(r => r.OptionalDate.HasValue));
-            Assert.Equal(2, results.Count(r => !r.OptionalDate.HasValue));
         }
 
         [Fact]
