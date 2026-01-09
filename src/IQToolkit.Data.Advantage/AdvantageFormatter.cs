@@ -245,6 +245,12 @@ namespace IQToolkit.Data.Advantage
 						this.Write("MINUTE("); this.Visit(m.Expression); this.Write(")"); return m;
 					case "Second":
 						this.Write("SECOND("); this.Visit(m.Expression); this.Write(")"); return m;
+					case "Date":
+						// For Advantage, just pass through the underlying expression
+						// Date columns don't need conversion, and for timestamp columns
+						// Advantage automatically uses only the date part in comparisons
+						this.Visit(m.Expression);
+						return m;
 				}
 			}
 			// Handle nullable DateTime/DateTimeOffset member access
@@ -271,6 +277,12 @@ namespace IQToolkit.Data.Advantage
 							this.Write("MINUTE("); this.Visit(m.Expression); this.Write(")"); return m;
 						case "Second":
 							this.Write("SECOND("); this.Visit(m.Expression); this.Write(")"); return m;
+						case "Date":
+							// For Advantage, just pass through the underlying expression
+							// Date columns don't need conversion, and for timestamp columns
+							// Advantage automatically uses only the date part in comparisons
+							this.Visit(m.Expression);
+							return m;
 					}
 				}
 			}
