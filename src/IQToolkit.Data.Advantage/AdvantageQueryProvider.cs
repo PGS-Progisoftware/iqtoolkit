@@ -5,12 +5,17 @@ using System.Data;
 using System.Data.Common;
 using System.Diagnostics;
 using System.Linq;
+using System.Linq.Expressions;
 
 namespace IQToolkit.Data.Advantage
 {
     public class AdvantageQueryProvider : DbEntityProvider
     {
         public bool EnableQueryTiming { get; set; } = true;
+
+        public bool EnableInboundQueryLogging { get; set; }
+
+        public Func<Expression, string> InboundQueryFormatter { get; set; } = static expr => IQToolkit.ExpressionWriter.WriteToString(expr);
 
         #region Factory Methods
 
@@ -228,5 +233,25 @@ namespace IQToolkit.Data.Advantage
 				return value;
 			}
 		}
+
+        public override Expression GetExecutionPlan(Expression expression)
+        {
+            if (this.EnableInboundQueryLogging && this.Log != null)
+            {
+                try
+                {
+                    this.Log.WriteLine("-- LINQ (inbound)");
+                    this.Log.WriteLine(this.InboundQueryFormatter?.Invoke(expression) ?? expression?.ToString());
+                    this.Log.WriteLine();
+                }
+                catch (Exception ex)
+                {
+                    this.Log.WriteLine($"-- LINQ (inbound) logging failed: {ex.Message}");
+                    this.Log.WriteLine();
+                }
+            }
+
+            return base.GetExecutionPlan(expression);
+        }
 	}
 }

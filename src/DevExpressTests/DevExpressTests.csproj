@@ -169,10 +169,6 @@
       <Project>{0da62a7c-3b40-456f-a4b2-b3e19ed4080e}</Project>
       <Name>IQToolkit</Name>
     </ProjectReference>
-    <ProjectReference Include="..\Test.Advantage\Test.Advantage.csproj">
-      <Project>{d602f06d-d705-47cb-98f9-7e93ea3bfcfa}</Project>
-      <Name>Test.Advantage</Name>
-    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
     <Analyzer Include="..\packages\DevExpress.Data.25.1.4\analyzers\dotnet\DevExpress.Generator.dll" />

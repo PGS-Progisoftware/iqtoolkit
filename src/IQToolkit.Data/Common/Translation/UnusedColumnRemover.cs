@@ -147,11 +147,17 @@ namespace IQToolkit.Data.Common
 
         protected override Expression VisitAggregate(AggregateExpression aggregate)
         {
-            // COUNT(*) forces all columns to be retained in subquery
-            if (aggregate.AggregateName == "Count" && aggregate.Argument == null)
+            // COUNT(*) does not require retaining all columns in subqueries.
+            // Keeping all columns causes COUNT queries over projections (relationships/composite fields)
+            // to expand to SELECT * unnecessarily.
+            // The only case where we may need to preserve columns is when COUNT is DISTINCT.
+            if ((aggregate.AggregateName == "Count" || aggregate.AggregateName == "LongCount")
+                && aggregate.Argument == null
+                && aggregate.IsDistinct)
             {
                 this.retainAllColumns = true;
             }
+
             return base.VisitAggregate(aggregate);
         }
 

@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.14.36414.22
+# Visual Studio Version 18
+VisualStudioVersion = 18.1.11312.151 d18.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IQToolkit", "IQToolkit\IQToolkit.csproj", "{0DA62A7C-3B40-456F-A4B2-B3E19ED4080E}"
 EndProject
@@ -59,8 +59,6 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IQToolkit.Data.Ado", "IQToolkit.Data.Ado\IQToolkit.Data.Ado.csproj", "{130854D0-8529-49E1-8E56-8E7F64DA3399}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IQToolkit.Data.Advantage", "IQToolkit.Data.Advantage\IQToolkit.Data.Advantage.csproj", "{1D33C015-A72B-45D2-9117-B86E8C4FA50C}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Test.Advantage", "Test.Advantage\Test.Advantage.csproj", "{D602F06D-D705-47CB-98F9-7E93EA3BFCFA}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DevExpressTests", "DevExpressTests\DevExpressTests.csproj", "{35CFE526-9DFE-47FF-86F8-8A5A3CA3214F}"
 EndProject
@@ -270,18 +268,6 @@ Global
 		{1D33C015-A72B-45D2-9117-B86E8C4FA50C}.Release|x64.Build.0 = Release|Any CPU
 		{1D33C015-A72B-45D2-9117-B86E8C4FA50C}.Release|x86.ActiveCfg = Release|Any CPU
 		{1D33C015-A72B-45D2-9117-B86E8C4FA50C}.Release|x86.Build.0 = Release|Any CPU
-		{D602F06D-D705-47CB-98F9-7E93EA3BFCFA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{D602F06D-D705-47CB-98F9-7E93EA3BFCFA}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{D602F06D-D705-47CB-98F9-7E93EA3BFCFA}.Debug|x64.ActiveCfg = Debug|Any CPU
-		{D602F06D-D705-47CB-98F9-7E93EA3BFCFA}.Debug|x64.Build.0 = Debug|Any CPU
-		{D602F06D-D705-47CB-98F9-7E93EA3BFCFA}.Debug|x86.ActiveCfg = Debug|Any CPU
-		{D602F06D-D705-47CB-98F9-7E93EA3BFCFA}.Debug|x86.Build.0 = Debug|Any CPU
-		{D602F06D-D705-47CB-98F9-7E93EA3BFCFA}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{D602F06D-D705-47CB-98F9-7E93EA3BFCFA}.Release|Any CPU.Build.0 = Release|Any CPU
-		{D602F06D-D705-47CB-98F9-7E93EA3BFCFA}.Release|x64.ActiveCfg = Release|Any CPU
-		{D602F06D-D705-47CB-98F9-7E93EA3BFCFA}.Release|x64.Build.0 = Release|Any CPU
-		{D602F06D-D705-47CB-98F9-7E93EA3BFCFA}.Release|x86.ActiveCfg = Release|Any CPU
-		{D602F06D-D705-47CB-98F9-7E93EA3BFCFA}.Release|x86.Build.0 = Release|Any CPU
 		{35CFE526-9DFE-47FF-86F8-8A5A3CA3214F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{35CFE526-9DFE-47FF-86F8-8A5A3CA3214F}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{35CFE526-9DFE-47FF-86F8-8A5A3CA3214F}.Debug|x64.ActiveCfg = Debug|Any CPU
