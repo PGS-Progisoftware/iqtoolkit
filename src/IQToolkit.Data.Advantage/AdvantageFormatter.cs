@@ -286,6 +286,24 @@ namespace IQToolkit.Data.Advantage
 					}
 				}
 			}
+			// Handle .Value property on Nullable<T> types
+			// In SQL, accessing .Value on a nullable column just means accessing the column itself
+			if (m.Member.Name == "Value" && TypeHelper.IsNullableType(m.Expression?.Type))
+			{
+				// Just visit the underlying expression (the column)
+				// SQL doesn't have a concept of .Value - the column is already the value
+				this.Visit(m.Expression);
+				return m;
+			}
+			// Handle .HasValue property on Nullable<T> types
+			// In SQL, HasValue translates to "IS NOT NULL"
+			if (m.Member.Name == "HasValue" && TypeHelper.IsNullableType(m.Expression?.Type))
+			{
+				this.Write("(");
+				this.Visit(m.Expression);
+				this.Write(" IS NOT NULL)");
+				return m;
+			}
 			return base.VisitMemberAccess(m);
 		}
 
