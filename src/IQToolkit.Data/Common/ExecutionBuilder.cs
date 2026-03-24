@@ -64,7 +64,7 @@ namespace IQToolkit.Data.Common
                     exprs.Add(MakeAssign(this.variables[i], this.initializers[i]));
                 }
                 exprs.Add(expression);
-                Expression sequence = MakeSequence(exprs);  // yields last expression value
+                Expression sequence = Expression.Block(exprs);  // yields last expression value
 
                 // use invoke/lambda to create variables via parameters in scope
                 Expression[] nulls = this.variables.Select(v => Expression.Constant(null, v.Type)).ToArray();
@@ -513,6 +513,32 @@ namespace IQToolkit.Data.Common
             return expr;
         }
 
+        protected override Expression VisitIsNull(IsNullExpression isnull)
+        {
+            // When the inner expression is a ColumnExpression still in scope,
+            // use IsDbNull directly on the reader — consistent with VisitOuterJoined.
+            ColumnExpression column = isnull.Expression as ColumnExpression;
+            if (column != null && this.scope != null)
+            {
+                ParameterExpression reader;
+                int iOrdinal;
+                if (this.scope.TryGetValue(column, out reader, out iOrdinal))
+                {
+                    return Expression.Call(reader, "IsDbNull", null, Expression.Constant(iOrdinal));
+                }
+            }
+
+            // Fallback: visit the inner expression and emit a standard null-equality check.
+            Expression expr = this.Visit(isnull.Expression);
+            if (!expr.Type.IsValueType || TypeHelper.IsNullableType(expr.Type))
+            {
+                return Expression.Equal(expr, Expression.Constant(null, expr.Type));
+            }
+
+            // Non-nullable value types can never be null on the client side.
+            return Expression.Constant(false);
+        }
+
         protected override Expression VisitColumn(ColumnExpression column)
         {
             ParameterExpression fieldReader;
@@ -548,9 +574,9 @@ namespace IQToolkit.Data.Common
             {
                 for (Scope s = this; s != null; s = s.outer)
                 {
-                    if (column.Alias == s.Alias && this.nameMap.TryGetValue(column.Name, out ordinal))
+                    if (column.Alias == s.Alias && s.nameMap.TryGetValue(column.Name, out ordinal))
                     {
-                        fieldReader = this.fieldReader;
+                        fieldReader = s.fieldReader;
                         return true;
                     }
                 }

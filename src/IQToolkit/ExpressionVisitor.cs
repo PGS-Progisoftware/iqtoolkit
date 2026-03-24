@@ -85,6 +85,8 @@ namespace IQToolkit
                     return this.VisitMemberInit((MemberInitExpression)exp);
                 case ExpressionType.ListInit:
                     return this.VisitListInit((ListInitExpression)exp);
+                case ExpressionType.Default:
+                    return this.VisitDefault((DefaultExpression)exp);
                 default:
                     return this.VisitUnknown(exp);
             }
@@ -93,6 +95,11 @@ namespace IQToolkit
         protected virtual Expression VisitUnknown(Expression expression)
         {
             throw new Exception(string.Format("Unhandled expression type: '{0}'", expression.NodeType));
+        }
+
+        protected virtual Expression VisitDefault(DefaultExpression d)
+        {
+            return d;
         }
 
         protected virtual MemberBinding VisitBinding(MemberBinding binding)

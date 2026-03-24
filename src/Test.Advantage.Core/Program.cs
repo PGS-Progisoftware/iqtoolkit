@@ -11,7 +11,6 @@ using System.Data.Common;
 using System.Linq;
 using System.Reflection;
 using System.Text;
-using WebServices.Mapperly;
 
 namespace Test.Advantage.Core
 {
@@ -37,103 +36,10 @@ namespace Test.Advantage.Core
             provider.EnableQueryTiming = true;
 			provider.EnableInboundQueryLogging = true;
 
-            try 
-            {
-				//TEST1
-				//If I make a count() without relation (locgen.Tiers.Nom) nor COmpositeField (locgen.DTDepartMateriel), teh generated SQL is ok
-				var test1 = provider.GetTable<LocGen>()
-				.Select(locgen => new LocationSummary
-				{
-					NUMLOC = locgen.NumeroLocation,
-					//DATEDEP = locgen.DTDepartMateriel,
-					//ClientName = locgen.Tiers.Nom,
-					SousTraitance = provider.GetTable<LocStGen>().Any(st => st.NUMLOC == locgen.NumeroLocation),
-				})
-				.Take(1)
-				.Count();
+			var result = provider.GetTable<LocArt>()
+			.Where(a => a.CodeArticle.ToLower() == "1001")
+			.ToList();
 
-				//TEST2
-				//If I make a count() with a CmpositeField (locgen.DTDepartMateriel), the generated SQL select ALL FIELDS FROM LOCCLT
-				var test2 = provider.GetTable<LocGen>()
-				.Select(locgen => new LocationSummary
-				{
-					NUMLOC = locgen.NumeroLocation,
-					DATEDEP = locgen.DTDepartMateriel,
-					//ClientName = locgen.Tiers.Nom,
-					SousTraitance = provider.GetTable<LocStGen>().Any(st => st.NUMLOC == locgen.NumeroLocation),
-				})
-				.Take(1)
-				.Count();
-
-				//TEST3
-				//If I make a ToList() with a CompositeField (locgen.DTDepartMateriel), the generated SQL IS OK
-				var test3 = provider.GetTable<LocGen>()
-				.Select(locgen => new LocationSummary
-				{
-					NUMLOC = locgen.NumeroLocation,
-					DATEDEP = locgen.DTDepartMateriel,
-					//ClientName = locgen.Tiers.Nom,
-					SousTraitance = provider.GetTable<LocStGen>().Any(st => st.NUMLOC == locgen.NumeroLocation),
-				})
-				.Take(1)
-				.ToList();
-
-
-				//TEST4
-				//If I make a count() with a relation (locgen.Tiers.Nom), the generated SQL select ALL FIELDS FROM LOCCLT
-				var test4 = provider.GetTable<LocGen>()
-				.Select(locgen => new LocationSummary
-				{
-					NUMLOC = locgen.NumeroLocation,
-					//DATEDEP = locgen.DTDepartMateriel,
-					ClientName = locgen.Tiers.Nom,
-					SousTraitance = provider.GetTable<LocStGen>().Any(st => st.NUMLOC == locgen.NumeroLocation),
-				})
-				.Take(1)
-				.Count();
-
-				//TEST5
-				//If I make a ToList() with a relation (locgen.Tiers.Nom), the generated SQL IS OK
-				var test5 = provider.GetTable<LocGen>()
-				.Select(locgen => new LocationSummary
-				{
-					NUMLOC = locgen.NumeroLocation,
-					//DATEDEP = locgen.DTDepartMateriel,
-					ClientName = locgen.Tiers.Nom,
-					SousTraitance = provider.GetTable<LocStGen>().Any(st => st.NUMLOC == locgen.NumeroLocation),
-				})
-				.Take(1)
-				.ToList();
-
-
-				//var locationsDynamic = provider.GetTable<LocGen>()
-				//.Select(locgen => new
-				//{
-				//	NUMLOC = locgen.NumeroLocation,
-				//	//DATEDEP = locgen.DTDepartMateriel,
-				//	DATEFIN = locgen.DATEFIN,
-				//	DATELOC = locgen.DATELOC,
-				//	//DATERET = locgen.DTRetourMateriel,
-				//	ClientName = locgen.Tiers.Nom,
-				//	SuiviPar = locgen.IdUtilisateurSuivi,
-				//	SuiviTech = locgen.IdUtilisateurSuiviTechnique,
-				//	// Subquery for SousTraitance
-				//	SousTraitance = provider.GetTable<LocStGen>().Any(st => st.NUMLOC == locgen.NumeroLocation),
-				//	TOTALHT = locgen.TOTALHT,
-				//	ValidationTechnique = locgen.VALIDTECH,
-				//	ValidationCommerciale = locgen.VALIDCOMM,
-				//	Affaire = locgen.IdAffaire
-				//})
-				//.Take(1)
-				//.ToList();
-
-				Console.WriteLine($"let's check the dates...");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Test 1 Failed: {ex.Message}");
-                Console.WriteLine(ex.StackTrace);
-            }
         }
     }
 
