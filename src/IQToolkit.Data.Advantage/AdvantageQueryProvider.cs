@@ -17,6 +17,13 @@ namespace IQToolkit.Data.Advantage
 
         public Func<Expression, string> InboundQueryFormatter { get; set; } = static expr => IQToolkit.ExpressionWriter.WriteToString(expr);
 
+		/// <summary>
+		/// Logs the actual <see cref="DbCommand"/> (SQL + bound ADO parameter values) that will be
+		/// sent to the Advantage ADO.NET provider. This is the most reliable form of logging since
+		/// it reflects the final <see cref="DbParameter.Value"/> values.
+		/// </summary>
+		public bool EnableOutboundCommandLogging { get; set; } = true;
+
         #region Factory Methods
 
         /// <summary>
@@ -141,9 +148,152 @@ namespace IQToolkit.Data.Advantage
 
                 return value;
             }
+
+
+			private static bool IsCharBackedEnumType(Type enumType)
+			{
+				enumType = TypeHelper.GetNonNullableType(enumType);
+				if (!enumType.IsEnum)
+				{
+					return false;
+				}
+
+				return _charBackedEnumCache.GetOrAdd(enumType, t =>
+					t.GetCustomAttributes(false).Cast<object>().Any(a => a.GetType().Name.Contains("CharBacked")));
+			}
+
+			private static object CoerceParameterValue(QueryParameter parameter, object value)
+			{
+				if (value == null || value == DBNull.Value)
+				{
+					return DBNull.Value;
+				}
+
+				var paramType = TypeHelper.GetNonNullableType(parameter.Type);
+				if (!paramType.IsEnum)
+				{
+					return value;
+				}
+
+				// For CharBacked enums we want to bind the underlying character (CHAR(1)) value, not the enum name.
+				// This is critical for updates/inserts, because parameter binding bypasses SQL formatter constant rendering.
+				if (IsCharBackedEnumType(paramType))
+				{
+					// Value might already be an enum, or (rarely) already coerced to underlying integral.
+					int intValue;
+					if (value.GetType().IsEnum)
+					{
+						intValue = System.Convert.ToInt32(value);
+					}
+					else
+					{
+						intValue = System.Convert.ToInt32(value);
+					}
+
+					char ch = (char)intValue;
+					return ch.ToString();
+				}
+
+				return value;
+			}
+
+			protected override void AddParameter(DbCommand command, QueryParameter parameter, object value)
+			{
+				DbParameter p = command.CreateParameter();
+				p.ParameterName = parameter.Name;
+				p.Value = CoerceParameterValue(parameter, value);
+				command.Parameters.Add(p);
+			}
+
+			protected override void SetParameterValues(QueryCommand query, DbCommand command, object[] paramValues)
+			{
+				if (query.Parameters.Count > 0 && command.Parameters.Count == 0)
+				{
+					for (int i = 0, n = query.Parameters.Count; i < n; i++)
+					{
+						this.AddParameter(command, query.Parameters[i], paramValues != null ? paramValues[i] : null);
+					}
+				}
+				else if (paramValues != null)
+				{
+					for (int i = 0, n = command.Parameters.Count; i < n; i++)
+					{
+						DbParameter p = command.Parameters[i];
+						if (p.Direction == System.Data.ParameterDirection.Input
+						 || p.Direction == System.Data.ParameterDirection.InputOutput)
+						{
+							p.Value = CoerceParameterValue(query.Parameters[i], paramValues[i]);
+						}
+					}
+				}
+			}
+
+			private void LogOutboundCommand(DbCommand cmd)
+			{
+				if (!_provider.EnableOutboundCommandLogging || _provider.Log == null || cmd == null)
+				{
+					return;
+				}
+
+				_provider.Log.WriteLine("-- SQL (outbound)");
+				_provider.Log.WriteLine(cmd.CommandText);
+
+				for (int i = 0; i < cmd.Parameters.Count; i++)
+				{
+					var p = (DbParameter)cmd.Parameters[i];
+					var v = p.Value;
+
+					if (v == null || v == DBNull.Value)
+					{
+						_provider.Log.WriteLine("-- {0} = NULL", p.ParameterName);
+					}
+					else if (v is string s)
+					{
+						// Make whitespace visible (critical for space-backed enums).
+						_provider.Log.WriteLine("-- {0} = ['{1}']", p.ParameterName, s);
+					}
+					else
+					{
+						_provider.Log.WriteLine("-- {0} = [{1}]", p.ParameterName, v);
+					}
+				}
+
+				_provider.Log.WriteLine();
+			}
+
+
+			protected override void LogParameters(QueryCommand command, object[] paramValues)
+			{
+				if (_provider.Log == null || paramValues == null)
+				{
+					return;
+				}
+
+				for (int i = 0, n = command.Parameters.Count; i < n; i++)
+				{
+					var p = command.Parameters[i];
+					var v = CoerceParameterValue(p, paramValues[i]);
+
+					if (v == null || v == DBNull.Value)
+					{
+						_provider.Log.WriteLine("-- {0} = NULL", p.Name);
+					}
+					else if (v is string s)
+					{
+						// Make whitespace visible in logs (space-backed enums would otherwise look blank).
+						_provider.Log.WriteLine("-- {0} = ['{1}']", p.Name, s);
+					}
+					else
+					{
+						_provider.Log.WriteLine("-- {0} = [{1}]", p.Name, v);
+					}
+				}
+			}
 			protected override DbCommand GetCommand(QueryCommand query, object[] paramValues)
 			{
-				return base.GetCommand(query, paramValues);
+				var cmd = base.GetCommand(query, paramValues);
+				LogOutboundCommand(cmd);
+				return cmd;
 			}
 
 			public override int ExecuteCommand(QueryCommand query, object[] paramValues)
