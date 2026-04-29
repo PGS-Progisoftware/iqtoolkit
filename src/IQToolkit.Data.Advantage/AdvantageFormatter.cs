@@ -321,17 +321,12 @@ namespace IQToolkit.Data.Advantage
 					{
 						case "ToInt32":
 							// Avoid VAL() since it's only available in ADS 12+.
-							// We intentionally use a generic CAST + CASE to stay compatible with ADS 10-12.
-							// Semantics:
-							// - NULL stays NULL
-							// - empty/whitespace becomes 0
-							this.Write("(CASE WHEN ");
+							// Prefer CONVERT(expr, SQL_INTEGER) for ADS 10-12 compatibility and to avoid CAST(),
+							// which may trigger Unicode DLL loading in some environments.
+							// Note: this does not special-case empty strings; ADS will error if the value isn't numeric.
+							this.Write("CONVERT(");
 							this.Visit(arg);
-							this.Write(" IS NULL THEN NULL WHEN TRIM(");
-							this.Visit(arg);
-							this.Write(") = '' THEN 0 ELSE CAST(");
-							this.Visit(arg);
-							this.Write(" AS SQL_INTEGER) END)");
+							this.Write(", SQL_INTEGER)");
 							return m;
 
 						case "ToInt16":
