@@ -309,7 +309,7 @@ namespace IQToolkit.Data.Advantage
 
 		protected override Expression VisitMethodCall(MethodCallExpression m)
 		{
-			// Handle Convert.ToXXX(string) methods - translate to VAL()
+			// Handle Convert.ToXXX(string) methods - translate to ADS-compatible conversions
 			if (m.Method.DeclaringType == typeof(Convert) && m.Arguments.Count == 1)
 			{
 				var arg = m.Arguments[0];
@@ -319,8 +319,22 @@ namespace IQToolkit.Data.Advantage
 				{
 					switch (m.Method.Name)
 					{
-						case "ToInt16":
 						case "ToInt32":
+							// Avoid VAL() since it's only available in ADS 12+.
+							// We intentionally use a generic CAST + CASE to stay compatible with ADS 10-12.
+							// Semantics:
+							// - NULL stays NULL
+							// - empty/whitespace becomes 0
+							this.Write("(CASE WHEN ");
+							this.Visit(arg);
+							this.Write(" IS NULL THEN NULL WHEN TRIM(");
+							this.Visit(arg);
+							this.Write(") = '' THEN 0 ELSE CAST(");
+							this.Visit(arg);
+							this.Write(" AS SQL_INTEGER) END)");
+							return m;
+
+						case "ToInt16":
 						case "ToInt64":
 						case "ToDecimal":
 						case "ToDouble":
