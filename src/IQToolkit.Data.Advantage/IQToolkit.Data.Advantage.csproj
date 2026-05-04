@@ -4,6 +4,9 @@
     <LangVersion>9.0</LangVersion>
     <AssemblyName>IQToolkit.Data.Advantage</AssemblyName>
     <RootNamespace>IQToolkit.Data.Advantage</RootNamespace>
+    <Version>1.0.1</Version>
+    <Company>PGS Progisoftware</Company>
+    <Product>IQToolkit.Data.Advantage</Product>
   </PropertyGroup>
   <ItemGroup>
     <!-- Reference to Advantage.Data.Provider.dll will be added manually -->

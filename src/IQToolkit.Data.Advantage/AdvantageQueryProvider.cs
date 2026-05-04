@@ -43,6 +43,11 @@ namespace IQToolkit.Data.Advantage
         {
         }
 
+        public AdvantageQueryProvider(string connectionString, Dictionary<Type, string> tablePaths, QueryPolicy policy = null)
+            : this(CreateConnection(connectionString), new DynamicPathMapping(tablePaths), policy)
+        {
+        }
+
         public AdvantageQueryProvider(DbConnection connection)
             : this(connection, new AdvantageMapping(), null)
         {
