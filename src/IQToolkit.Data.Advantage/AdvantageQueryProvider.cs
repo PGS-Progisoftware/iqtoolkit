@@ -34,16 +34,21 @@ namespace IQToolkit.Data.Advantage
             return new AdvantageQueryProvider(connectionString, policy);
         }
 
-        #endregion
+		#endregion
 
-        #region Constructors
+		#region Constructors
 
-        public AdvantageQueryProvider(string connectionString, QueryPolicy policy = null)
+		public AdvantageQueryProvider(string connectionString)
+			: this(CreateConnection(connectionString))
+		{
+		}
+
+		public AdvantageQueryProvider(string connectionString, QueryPolicy policy = null)
             : this(CreateConnection(connectionString), new AdvantageMapping(), policy)
         {
         }
 
-        public AdvantageQueryProvider(string connectionString, Dictionary<Type, string> tablePaths, QueryPolicy policy = null)
+        public AdvantageQueryProvider(string connectionString, Dictionary<Type, string> tablePaths = null, QueryPolicy policy = null)
             : this(CreateConnection(connectionString), new DynamicPathMapping(tablePaths), policy)
         {
         }

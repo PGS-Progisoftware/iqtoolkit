@@ -146,6 +146,312 @@ namespace IQToolkit.Data.Advantage
             return executor();
         }
 
+        /// <summary>
+        /// Applies the same partial-update SET shape to many rows identified by primary key.
+        /// Each row supplies its own key and <paramref name="getSet"/> expression (e.g. <c>x => new { Status = row.Status }</c>).
+        /// Executes as one parameterized UPDATE template via <see cref="QueryExecutor.ExecuteBatch"/>.
+        /// </summary>
+        public static IEnumerable<int> BatchUpdatePartial<T, TRow>(
+            this IEntityTable<T> table,
+            IEnumerable<TRow> rows,
+            Func<TRow, object> getKey,
+            Func<TRow, Expression<Func<T, object>>> getSet,
+            int batchSize = 50,
+            bool stream = false)
+            where T : class
+        {
+            if (table == null) throw new ArgumentNullException(nameof(table));
+            if (rows == null) throw new ArgumentNullException(nameof(rows));
+            if (getKey == null) throw new ArgumentNullException(nameof(getKey));
+            if (getSet == null) throw new ArgumentNullException(nameof(getSet));
+
+            var rowList = rows as IList<TRow> ?? rows.ToList();
+            if (rowList.Count == 0)
+            {
+                return Enumerable.Empty<int>();
+            }
+
+            var provider = GetEntityProvider(table);
+            var mapping = provider.Mapping;
+            var basicMapping = GetBasicMapping(mapping);
+            var entityMeta = mapping.GetEntity(typeof(T), table.EntityId);
+            var tableName = basicMapping.GetTableName(entityMeta);
+            var tableAlias = new TableAlias();
+            var tex = new TableExpression(tableAlias, entityMeta, tableName);
+
+            var pkMembers = mapping.GetPrimaryKeyMembers(entityMeta).ToList();
+            if (pkMembers.Count != 1)
+            {
+                throw new NotSupportedException("BatchUpdatePartial requires a single-column primary key.");
+            }
+
+            var pkMember = pkMembers[0];
+            var pkClrType = TypeHelper.GetMemberType(pkMember);
+
+            var translator = new QueryTranslator(provider.Language, provider.Mapping, provider.Policy);
+            var linguist = provider.Language.CreateLinguist(translator);
+
+            string commandText = null;
+            List<string> parameterOrder = null;
+            List<QueryParameter> queryParameters = null;
+            var paramSets = new List<object[]>();
+
+            foreach (var row in rowList)
+            {
+                var key = CoerceKey(getKey(row), pkClrType);
+                var set = getSet(row);
+                var where = BuildWhereFromKey(entityMeta, basicMapping, provider.Language, tex, pkMember, key);
+                var assignments = BuildAssignmentsFromSet(entityMeta, basicMapping, provider.Language, tex, set);
+
+                if (assignments.Count == 0)
+                {
+                    continue;
+                }
+
+                var updateCommand = new UpdateCommand(tex, where, assignments);
+                var parameterized = linguist.Parameterize(updateCommand);
+                var formatted = linguist.Format(parameterized);
+                var namedValues = NamedValueGatherer.Gather(parameterized);
+                var rowOrder = GetParameterOrder(namedValues);
+
+                if (commandText == null)
+                {
+                    commandText = formatted;
+                    parameterOrder = rowOrder;
+                    queryParameters = rowOrder
+                        .Select(name => namedValues.First(nv => nv.Name == name))
+                        .Select(nv => new QueryParameter(nv.Name, nv.Value.Type, nv.QueryType))
+                        .ToList();
+                }
+                else
+                {
+                    if (!string.Equals(commandText, formatted, StringComparison.Ordinal))
+                    {
+                        throw new NotSupportedException("All rows must produce the same UPDATE statement shape.");
+                    }
+
+                    if (!rowOrder.SequenceEqual(parameterOrder))
+                    {
+                        throw new NotSupportedException("All rows must use the same parameter set.");
+                    }
+                }
+
+                var valuesByName = namedValues.ToDictionary(nv => nv.Name, EvaluateNamedValue);
+                paramSets.Add(parameterOrder.Select(name => valuesByName[name]).ToArray());
+            }
+
+            if (commandText == null || paramSets.Count == 0)
+            {
+                return Enumerable.Empty<int>();
+            }
+
+            var queryCommand = new QueryCommand(commandText, queryParameters);
+            return ExecuteBatch(provider, queryCommand, paramSets, batchSize, stream);
+        }
+
+        /// <summary>
+        /// Batch partial update of a single mapped column identified by primary key.
+        /// </summary>
+        public static IEnumerable<int> BatchUpdatePartial<T, TValue>(
+            this IEntityTable<T> table,
+            Expression<Func<T, TValue>> member,
+            IEnumerable<(object key, TValue value)> rows,
+            int batchSize = 50,
+            bool stream = false)
+            where T : class
+        {
+            if (table == null) throw new ArgumentNullException(nameof(table));
+            if (member == null) throw new ArgumentNullException(nameof(member));
+            if (rows == null) throw new ArgumentNullException(nameof(rows));
+
+            var mappedMember = GetMemberFromLambda(member);
+            var rowList = rows as IList<(object key, TValue value)> ?? rows.ToList();
+
+            return table.BatchUpdatePartial(
+                rowList,
+                r => r.key,
+                r => CreateSetExpression<T, TValue>(mappedMember, r.value),
+                batchSize,
+                stream);
+        }
+
+        /// <summary>
+        /// Batch partial update of a single mapped column, keyed by primary key values in a dictionary.
+        /// </summary>
+        public static IEnumerable<int> BatchUpdatePartial<T, TKey, TValue>(
+            this IEntityTable<T> table,
+            Expression<Func<T, TValue>> member,
+            IReadOnlyDictionary<TKey, TValue> rows,
+            int batchSize = 50,
+            bool stream = false)
+            where T : class
+        {
+            if (table == null) throw new ArgumentNullException(nameof(table));
+            if (member == null) throw new ArgumentNullException(nameof(member));
+            if (rows == null) throw new ArgumentNullException(nameof(rows));
+
+            return table.BatchUpdatePartial(
+                member,
+                rows.Select(kv => ((object)kv.Key, kv.Value)),
+                batchSize,
+                stream);
+        }
+
+        private static EntityProvider GetEntityProvider<T>(IEntityTable<T> table)
+        {
+            var provider = table.Provider as EntityProvider;
+            if (provider == null)
+            {
+                throw new InvalidOperationException("The table's provider must be an EntityProvider.");
+            }
+
+            return provider;
+        }
+
+        private static BasicMapping GetBasicMapping(QueryMapping mapping)
+        {
+            var basicMapping = mapping as BasicMapping;
+            if (basicMapping == null)
+            {
+                throw new InvalidOperationException("Partial updates require a BasicMapping-derived mapping (e.g., AdvantageMapping).");
+            }
+
+            return basicMapping;
+        }
+
+        private static IEnumerable<int> ExecuteBatch(
+            EntityProvider provider,
+            QueryCommand command,
+            IList<object[]> paramSets,
+            int batchSize,
+            bool stream)
+        {
+            var executor = ((IQueryExecutorFactory)provider).CreateExecutor();
+            var results = executor.ExecuteBatch(command, paramSets, batchSize, stream);
+            if (!stream)
+            {
+                return results.ToList();
+            }
+
+            return results;
+        }
+
+        private static List<string> GetParameterOrder(IEnumerable<NamedValueExpression> namedValues)
+        {
+            return namedValues
+                .Select(nv => nv.Name)
+                .Distinct()
+                .OrderBy(name => name, ParameterNameComparer.Instance)
+                .ToList();
+        }
+
+        private static object EvaluateNamedValue(NamedValueExpression namedValue)
+        {
+            return Evaluate(namedValue.Value);
+        }
+
+        private static object CoerceKey(object key, Type memberType)
+        {
+            if (key == null)
+            {
+                return null;
+            }
+
+            var keyType = key.GetType();
+            if (memberType.IsAssignableFrom(keyType))
+            {
+                return key;
+            }
+
+            return Convert.ChangeType(key, memberType);
+        }
+
+        private static MemberInfo GetMemberFromLambda<T, TValue>(Expression<Func<T, TValue>> member)
+        {
+            var body = StripConvert(member.Body);
+            if (!(body is MemberExpression memberExpression) || memberExpression.Expression?.NodeType != ExpressionType.Parameter)
+            {
+                throw new NotSupportedException("BatchUpdatePartial member must be a simple member access, e.g. x => x.Status.");
+            }
+
+            return memberExpression.Member;
+        }
+
+        private static Expression<Func<T, object>> CreateSetExpression<T, TValue>(MemberInfo member, TValue value)
+            where T : class
+        {
+            var param = Expression.Parameter(typeof(T), "x");
+            var memberType = TypeHelper.GetMemberType(member);
+            var constant = Expression.Constant(value, typeof(TValue));
+            Expression valueExpr = constant;
+            if (typeof(TValue) != memberType)
+            {
+                valueExpr = Expression.Convert(constant, memberType);
+            }
+
+            var newExpr = Expression.New(typeof(T));
+            Expression body;
+            if (member is PropertyInfo property)
+            {
+                body = Expression.MemberInit(newExpr, Expression.Bind(property, valueExpr));
+            }
+            else if (member is FieldInfo field)
+            {
+                body = Expression.MemberInit(newExpr, Expression.Bind(field, valueExpr));
+            }
+            else
+            {
+                throw new NotSupportedException($"Member '{member.Name}' must be a field or property.");
+            }
+
+            return Expression.Lambda<Func<T, object>>(
+                Expression.Convert(body, typeof(object)),
+                param);
+        }
+
+        private static Expression BuildWhereFromKey(
+            MappingEntity entityMeta,
+            BasicMapping mapping,
+            QueryLanguage language,
+            TableExpression tex,
+            MemberInfo pkMember,
+            object keyValue)
+        {
+            var memberType = TypeHelper.GetMemberType(pkMember);
+            var columnType = language.TypeSystem.GetColumnType(memberType);
+            var columnName = mapping.GetColumnName(entityMeta, pkMember);
+
+            var columnExpr = new ColumnExpression(
+                memberType,
+                columnType,
+                tex.Alias,
+                columnName);
+
+            var constExpr = Expression.Constant(keyValue, memberType);
+            return columnExpr.Equal(constExpr);
+        }
+
+        private sealed class ParameterNameComparer : IComparer<string>
+        {
+            public static readonly ParameterNameComparer Instance = new ParameterNameComparer();
+
+            public int Compare(string x, string y)
+            {
+                if (x == y) return 0;
+                if (x == null) return -1;
+                if (y == null) return 1;
+
+                if (x.Length > 1 && y.Length > 1 && x[0] == 'p' && y[0] == 'p'
+                    && int.TryParse(x.Substring(1), out int ix)
+                    && int.TryParse(y.Substring(1), out int iy))
+                {
+                    return ix.CompareTo(iy);
+                }
+
+                return string.CompareOrdinal(x, y);
+            }
+        }
+
         private static Expression BuildPrimaryKeyPredicate<T>(
             MappingEntity entityMeta,
             BasicMapping mapping,
