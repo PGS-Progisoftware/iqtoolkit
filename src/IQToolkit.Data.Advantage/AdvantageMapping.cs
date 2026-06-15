@@ -919,8 +919,9 @@ namespace IQToolkit.Data.Advantage
 
 		/// <summary>
 		/// Expands composite fields in SELECT projections BEFORE binding.
-		/// This rewrites locgen.DTDepartMateriel to locgen.DATEDEP so the projection
-		/// binds to the actual database column, not the virtual composite field.
+		/// Rewrites e.g. locgen.DTDepartMateriel to
+		/// new LocGen { DATEDEP = locgen.DATEDEP, HEUREDEP = locgen.HEUREDEP }.DTDepartMateriel
+		/// so both backing columns are selected and the composite getter merges date+time client-side.
 		/// Only rewrites when inside a MemberInit or New expression (DTO creation).
 		/// </summary>
 		private class CompositeFieldProjectionExpander : ExpressionVisitor
@@ -966,19 +967,23 @@ namespace IQToolkit.Data.Advantage
 				// Only rewrite composite fields when inside a projection
 				if (insideProjection && HasCompositeFieldAttribute(m.Member))
 				{
-					// Get the underlying date column
 					var attr = GetCompositeFieldAttribute(m.Member);
 					if (attr != null && m.Expression != null)
 					{
 						var entityType = m.Expression.Type;
-						var dateMember = (MemberInfo)entityType.GetProperty(attr.DateMember) ?? 
+						var dateMember = (MemberInfo)entityType.GetProperty(attr.DateMember) ??
 						                 entityType.GetField(attr.DateMember);
+						var timeMember = (MemberInfo)entityType.GetProperty(attr.TimeMember) ??
+						                 entityType.GetField(attr.TimeMember);
 
-						if (dateMember != null)
+						if (dateMember != null && timeMember != null)
 						{
-							// Rewrite to access the date column instead of the composite
-							// This ensures the projection SELECT uses DATEDEP, not DTDepartMateriel
-							return Expression.MakeMemberAccess(source, dateMember);
+							var minimalEntity = Expression.MemberInit(
+								Expression.New(entityType),
+								Expression.Bind(dateMember, Expression.MakeMemberAccess(source, dateMember)),
+								Expression.Bind(timeMember, Expression.MakeMemberAccess(source, timeMember))
+							);
+							return Expression.MakeMemberAccess(minimalEntity, m.Member);
 						}
 					}
 				}

@@ -22,6 +22,29 @@ namespace IQToolkit.Data.Advantage.Tests
         }
 
         [Fact]
+        public void SelectCompositeDate_DtoProjection_MatchesDirectRead()
+        {
+            var provider = GetProvider();
+
+            foreach (var id in new[] { 1, 2, 3 })
+            {
+                var direct = provider.GetTable<TestEntity>()
+                    .Where(t => t.Id == id)
+                    .Select(t => t.CompositeDate)
+                    .Single();
+
+                var dto = provider.GetTable<TestEntity>()
+                    .Where(t => t.Id == id)
+                    .Select(t => new { DTModification = t.CompositeDate })
+                    .Single()
+                    .DTModification;
+
+                Assert.Equal(direct, dto);
+                Assert.NotEqual(TimeSpan.Zero, dto.Value.TimeOfDay);
+            }
+        }
+
+        [Fact]
         public void SelectCompositeDate_Direct_Projection_ToList()
         {
             var exception = Record.Exception(() =>
@@ -42,12 +65,9 @@ namespace IQToolkit.Data.Advantage.Tests
             var table = provider.GetTable<TestEntity>("TestTable");
             
             // Select the composite field directly
-            var query = from t in table 
+            var result = (from t in table
                         where t.Id == 1
-                        select t.CompositeDate;
-            
-            string sql = provider.GetQueryText(query.Expression);
-            var result = query.Single();
+                        select t.CompositeDate).Single();
 
             // Row 1: 2023-01-01 10:00
             var expected = new DateTime(2023, 1, 1, 10, 0, 0);
@@ -65,12 +85,9 @@ namespace IQToolkit.Data.Advantage.Tests
             // Should NOT match Row 1 (10:00)
             var cutoff = new DateTime(2023, 1, 1, 12, 0, 0);
             
-            var query = from t in table 
+            var list = (from t in table
                         where t.CompositeDate > cutoff
-                        select t;
-            
-            string sql = provider.GetQueryText(query.Expression);
-            var list = query.ToList();
+                        select t).ToList();
 
             Assert.Equal(2, list.Count);
             Assert.Contains(list, t => t.Id == 2);
@@ -89,12 +106,9 @@ namespace IQToolkit.Data.Advantage.Tests
             // Also matches Row 4 (NULL/Blank) because blank dates are treated as MinValue in DBF
             var cutoff = new DateTime(2023, 1, 1, 12, 0, 0);
             
-            var query = from t in table 
+            var list = (from t in table
                         where t.CompositeDate < cutoff
-                        select t;
-            
-            string sql = provider.GetQueryText(query.Expression);
-            var list = query.ToList();
+                        select t).ToList();
 
             Assert.Equal(2, list.Count);
             Assert.Contains(list, t => t.Id == 1);
@@ -110,12 +124,9 @@ namespace IQToolkit.Data.Advantage.Tests
             // Filter: == 2023-01-01 14:30
             var target = new DateTime(2023, 1, 1, 14, 30, 0);
             
-            var query = from t in table 
+            var list = (from t in table
                         where t.CompositeDate == target
-                        select t;
-            
-            string sql = provider.GetQueryText(query.Expression);
-            var list = query.ToList();
+                        select t).ToList();
 
             Assert.Single(list);
             Assert.Equal(2, list[0].Id);
@@ -133,12 +144,9 @@ namespace IQToolkit.Data.Advantage.Tests
             // Also matches Row 4 (NULL/Blank) because blank dates != target date
             var target = new DateTime(2023, 1, 1, 14, 30, 0);
             
-            var query = from t in table 
+            var list = (from t in table
                         where t.CompositeDate != target
-                        select t;
-            
-            string sql = provider.GetQueryText(query.Expression);
-            var list = query.ToList();
+                        select t).ToList();
 
             Assert.Equal(3, list.Count);
             Assert.Contains(list, t => t.Id == 1);
@@ -157,12 +165,9 @@ namespace IQToolkit.Data.Advantage.Tests
             // Should match Row 2 (14:30) and Row 3 (Jan 2)
             var cutoff = new DateTime(2023, 1, 1, 14, 30, 0);
             
-            var query = from t in table 
+            var list = (from t in table
                         where t.CompositeDate >= cutoff
-                        select t;
-            
-            string sql = provider.GetQueryText(query.Expression);
-            var list = query.ToList();
+                        select t).ToList();
 
             Assert.Equal(2, list.Count);
             Assert.Contains(list, t => t.Id == 2);
@@ -181,12 +186,9 @@ namespace IQToolkit.Data.Advantage.Tests
             // Also matches Row 4 (NULL/Blank) because blank dates are treated as MinValue
             var cutoff = new DateTime(2023, 1, 1, 14, 30, 0);
             
-            var query = from t in table 
+            var list = (from t in table
                         where t.CompositeDate <= cutoff
-                        select t;
-            
-            string sql = provider.GetQueryText(query.Expression);
-            var list = query.ToList();
+                        select t).ToList();
 
             Assert.Equal(3, list.Count);
             Assert.Contains(list, t => t.Id == 1);
@@ -203,12 +205,9 @@ namespace IQToolkit.Data.Advantage.Tests
             
             // Filter: == null
             // Should match Row 4
-            var query = from t in table 
+            var list = (from t in table
                         where t.CompositeDate == null
-                        select t;
-            
-            string sql = provider.GetQueryText(query.Expression);
-            var list = query.ToList();
+                        select t).ToList();
 
             Assert.Single(list);
             Assert.Equal(4, list[0].Id);
@@ -222,12 +221,9 @@ namespace IQToolkit.Data.Advantage.Tests
             
             // Filter: != null
             // Should match Rows 1, 2, 3
-            var query = from t in table 
+            var list = (from t in table
                         where t.CompositeDate != null
-                        select t;
-            
-            string sql = provider.GetQueryText(query.Expression);
-            var list = query.ToList();
+                        select t).ToList();
 
             Assert.Equal(3, list.Count);
             Assert.Contains(list, t => t.Id == 1);
