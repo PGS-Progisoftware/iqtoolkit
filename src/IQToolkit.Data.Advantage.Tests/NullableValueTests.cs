@@ -378,19 +378,18 @@ namespace IQToolkit.Data.Advantage.Tests
         }
 
         [Fact]
-        public void NullableDateTime_Value_Generates_Correct_SQL()
+        public void NullableDateTime_Value_In_Projection_ReturnsExpectedDates()
         {
-            // Test: Verify SQL generation for nullable.Value
-            // The .Value should be removed in SQL translation
-            var query = _provider.GetTable<TestEntity>()
-                .Select(t => new { t.Id, Date = t.DateCol.Value });
+            var results = _provider.GetTable<TestEntity>()
+                .Where(t => t.DateCol.HasValue)
+                .Select(t => new { t.Id, Date = t.DateCol.Value })
+                .OrderBy(r => r.Id)
+                .ToList();
 
-            var sql = _provider.GetQueryText(query.Expression);
-
-            // SQL should NOT contain ".Value" string
-            Assert.DoesNotContain(".Value", sql);
-            // SQL should contain the column name
-            Assert.Contains("DateCol", sql);
+            Assert.Equal(3, results.Count);
+            Assert.Equal(new DateTime(2023, 1, 1), results[0].Date.Date);
+            Assert.Equal(new DateTime(2023, 1, 1), results[1].Date.Date);
+            Assert.Equal(new DateTime(2023, 1, 2), results[2].Date.Date);
         }
 
         #endregion
