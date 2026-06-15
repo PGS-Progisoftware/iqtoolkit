@@ -256,6 +256,64 @@ namespace IQToolkit.Data.Advantage.Tests
         #region SQL Generation Validation
 
         [Fact]
+        public void NullableDateTime_Direct_Select_Scalar()
+        {
+            var results = _provider.GetTable<TestEntity>()
+                .Select(t => t.DateCol)
+                .Take(1)
+                .ToList();
+            Assert.Single(results);
+        }
+
+        [Fact]
+        public void NullableDateTime_OrderBy_Direct()
+        {
+            var results = _provider.GetTable<TestEntity>()
+                .OrderBy(t => t.DateCol)
+                .Take(1)
+                .ToList();
+            Assert.Single(results);
+        }
+
+        [Fact]
+        public void NullableDateTime_OrderBy_After_Projection()
+        {
+            var results = _provider.GetTable<TestEntity>()
+                .Select(t => new { DTModification = t.DateCol, t.Id })
+                .OrderBy(x => x.DTModification)
+                .Take(1)
+                .ToList();
+            Assert.Single(results);
+        }
+
+        [Fact]
+        public void NullableDateTime_Direct_Projection_Without_Value()
+        {
+            // Reproduces: "The member access 'System.Nullable`1[System.DateTime] DTModification' is not supported"
+            var exception = Record.Exception(() =>
+            {
+                var results = _provider.GetTable<TestEntity>()
+                    .Select(t => new { DTModification = t.DateCol })
+                    .Take(1)
+                    .ToList();
+
+                Assert.Single(results);
+            });
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
+        public void NullableDateTime_Direct_Projection_With_Count()
+        {
+            var count = _provider.GetTable<TestEntity>()
+                .Select(t => new { DTModification = t.DateCol })
+                .Count();
+
+            Assert.Equal(4, count);
+        }
+
+        [Fact]
         public void NullableDateTime_Value_Generates_Correct_SQL()
         {
             // Test: Verify SQL generation for nullable.Value

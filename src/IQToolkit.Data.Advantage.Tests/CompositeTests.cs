@@ -22,6 +22,20 @@ namespace IQToolkit.Data.Advantage.Tests
         }
 
         [Fact]
+        public void SelectCompositeDate_Direct_Projection_ToList()
+        {
+            var exception = Record.Exception(() =>
+            {
+                var results = GetProvider().GetTable<TestEntity>()
+                    .Select(t => new { DTModification = t.CompositeDate })
+                    .Take(1)
+                    .ToList();
+                Assert.Single(results);
+            });
+            Assert.Null(exception);
+        }
+
+        [Fact]
         public void SelectCompositeDate()
         {
             var provider = GetProvider();

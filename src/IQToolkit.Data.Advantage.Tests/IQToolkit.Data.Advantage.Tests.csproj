@@ -25,17 +25,13 @@
 
   <ItemGroup>
     <Reference Include="Advantage.Data.Provider">
-      <HintPath>Z:\Redistribute\Advantage.Data.Provider.dll</HintPath>
+      <HintPath>Advantage.Data.Provider.dll</HintPath>
     </Reference>
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\Test.Advantage\ace64.dll">
-      <Link>ace64.dll</Link>
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
-    </None>
-    <None Include="..\Test.Advantage\axcws64.dll">
-      <Link>axcws64.dll</Link>
+    <None Include="ace64.dll">
+    <None Include="axcws64.dll">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
   </ItemGroup>
