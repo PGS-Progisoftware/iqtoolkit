@@ -266,6 +266,70 @@ namespace IQToolkit.Data.Advantage.Tests
         }
 
         [Fact]
+        public void NullableDateTime_OrderBy_CompositeField_Before_Select_Skip_Take()
+        {
+            var exception = Record.Exception(() =>
+            {
+                var results = _provider.GetTable<TestEntity>()
+                    .OrderBy(t => t.CompositeDate)
+                    .Select(t => new { t.Id, DTModification = t.CompositeDate })
+                    .Skip(0)
+                    .Take(50)
+                    .ToList();
+
+                Assert.True(results.Count > 0);
+            });
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
+        public void NullableDateTime_OrderBy_Before_Select_With_Skip_Take()
+        {
+            // Gridify pattern: OrderBy(entity => DTModification).Select(DTO).Skip().Take()
+            var exception = Record.Exception(() =>
+            {
+                var results = _provider.GetTable<TestEntity>()
+                    .OrderBy(t => t.DateCol)
+                    .Select(t => new TestEntityDTO
+                    {
+                        Id = t.Id,
+                        Name = t.Name,
+                        DateValue = t.DateCol ?? default
+                    })
+                    .Skip(0)
+                    .Take(50)
+                    .ToList();
+
+                Assert.True(results.Count > 0);
+            });
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
+        public void NullableDateTime_OrderBy_Before_Select_Direct_Nullable_In_DTO()
+        {
+            var exception = Record.Exception(() =>
+            {
+                var results = _provider.GetTable<TestEntity>()
+                    .OrderBy(t => t.DateCol)
+                    .Select(t => new
+                    {
+                        t.Id,
+                        DTModification = t.DateCol
+                    })
+                    .Skip(0)
+                    .Take(50)
+                    .ToList();
+
+                Assert.True(results.Count > 0);
+            });
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
         public void NullableDateTime_OrderBy_Direct()
         {
             var results = _provider.GetTable<TestEntity>()

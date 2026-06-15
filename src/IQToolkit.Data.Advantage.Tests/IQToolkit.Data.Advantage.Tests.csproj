@@ -31,6 +31,8 @@
 
   <ItemGroup>
     <None Include="ace64.dll">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
     <None Include="axcws64.dll">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>

@@ -87,6 +87,10 @@ namespace IQToolkit.Data.Advantage
 				// This is needed because Step 2b introduces MemberAccess to underlying columns (Date/Time)
 				// but SqlFormatter expects ColumnExpressions.
 				expression = Columnizer.Columnize(expression, this);
+
+				// Step 2c2: ORDER BY on composite fields must sort by underlying date/time columns
+				expression = OrderByCompositeFieldRewriter.Rewrite(this, expression);
+				expression = Columnizer.Columnize(expression, this);
 				
 				// Step 2d: Fix GROUP BY expressions that reference columns from projections with navigation properties
 				// This ensures GROUP BY clauses correctly reference columns from joined tables
@@ -94,6 +98,7 @@ namespace IQToolkit.Data.Advantage
 				
 				// Step 3: Expand composite field accesses in SELECT to underlying columns
 				expression = CompositeFieldExpander.Expand(expression);
+				expression = Columnizer.Columnize(expression, this);
 
 				return expression;
 			}
@@ -191,6 +196,162 @@ namespace IQToolkit.Data.Advantage
                         }
                     }
                     
+                    return null;
+                }
+            }
+
+            class OrderByCompositeFieldRewriter : DbExpressionVisitor
+            {
+                private readonly AdvantageMapper mapper;
+                private readonly AdvantageMapping mapping;
+
+                private OrderByCompositeFieldRewriter(AdvantageMapper mapper)
+                {
+                    this.mapper = mapper;
+                    this.mapping = mapper._mapping;
+                }
+
+                public static Expression Rewrite(AdvantageMapper mapper, Expression expression)
+                {
+                    return new OrderByCompositeFieldRewriter(mapper).Visit(expression);
+                }
+
+                protected override Expression VisitSelect(SelectExpression select)
+                {
+                    select = (SelectExpression)base.VisitSelect(select);
+
+                    if (select.OrderBy == null || select.OrderBy.Count == 0)
+                        return select;
+
+                    var newOrderings = new List<OrderExpression>();
+                    bool changed = false;
+
+                    foreach (var order in select.OrderBy)
+                    {
+                        if (TryExpandCompositeOrderBy(order, out var expanded))
+                        {
+                            changed = true;
+                            newOrderings.AddRange(expanded);
+                        }
+                        else
+                        {
+                            newOrderings.Add(order);
+                        }
+                    }
+
+                    return changed ? select.SetOrderBy(newOrderings) : select;
+                }
+
+                private bool TryExpandCompositeOrderBy(OrderExpression order, out List<OrderExpression> orderings)
+                {
+                    orderings = null;
+
+                    if (!(order.Expression is MemberExpression compositeAccess))
+                        return false;
+
+                    var attr = GetCompositeFieldAttribute(compositeAccess.Member);
+                    if (attr == null)
+                        return false;
+
+                    if (!TryGetUnderlyingColumnExpressions(compositeAccess, attr, out var dateExpr, out var timeExpr))
+                        return false;
+
+                    orderings = new List<OrderExpression>
+                    {
+                        new OrderExpression(order.OrderType, dateExpr),
+                        new OrderExpression(order.OrderType, timeExpr)
+                    };
+                    return true;
+                }
+
+                private bool TryGetUnderlyingColumnExpressions(
+                    MemberExpression compositeAccess,
+                    CompositeFieldAttribute attr,
+                    out Expression dateExpr,
+                    out Expression timeExpr)
+                {
+                    dateExpr = null;
+                    timeExpr = null;
+
+                    MappingEntity entity = null;
+                    Expression entityBody = null;
+                    TableAlias alias = null;
+
+                    if (compositeAccess.Expression is EntityExpression entityExpression)
+                    {
+                        entity = entityExpression.Entity;
+                        entityBody = entityExpression.Expression;
+                        if (entityBody is AliasedExpression aliased)
+                            alias = aliased.Alias;
+                    }
+                    else if (compositeAccess.Expression is TableExpression tableExpression)
+                    {
+                        entity = tableExpression.Entity;
+                        alias = tableExpression.Alias;
+                    }
+                    else
+                    {
+                        return false;
+                    }
+
+                    var entityType = entity.StaticType;
+                    var dateMember = (MemberInfo)entityType.GetProperty(attr.DateMember)
+                                     ?? entityType.GetField(attr.DateMember);
+                    var timeMember = (MemberInfo)entityType.GetProperty(attr.TimeMember)
+                                     ?? entityType.GetField(attr.TimeMember);
+
+                    if (dateMember == null || timeMember == null)
+                        return false;
+
+                    if (entityBody != null)
+                    {
+                        dateExpr = ColumnizerFindMemberInEntity(entityBody, dateMember);
+                        timeExpr = ColumnizerFindMemberInEntity(entityBody, timeMember);
+                    }
+
+                    if (dateExpr == null && alias != null && mapping.IsColumn(entity, dateMember))
+                    {
+                        dateExpr = CreateColumnExpression(entity, dateMember, alias);
+                    }
+
+                    if (timeExpr == null && alias != null && mapping.IsColumn(entity, timeMember))
+                    {
+                        timeExpr = CreateColumnExpression(entity, timeMember, alias);
+                    }
+
+                    return dateExpr != null && timeExpr != null;
+                }
+
+                private ColumnExpression CreateColumnExpression(MappingEntity entity, MemberInfo member, TableAlias alias)
+                {
+                    return new ColumnExpression(
+                        TypeHelper.GetMemberType(member),
+                        mapper.GetColumnType(entity, member),
+                        alias,
+                        mapping.GetColumnName(entity, member));
+                }
+
+                private static Expression ColumnizerFindMemberInEntity(Expression entityExpression, MemberInfo member)
+                {
+                    if (entityExpression is MemberInitExpression minit)
+                    {
+                        foreach (var binding in minit.Bindings.OfType<MemberAssignment>())
+                        {
+                            if (binding.Member.Name == member.Name)
+                                return binding.Expression;
+                        }
+                        return ColumnizerFindMemberInEntity(minit.NewExpression, member);
+                    }
+
+                    if (entityExpression is NewExpression nex && nex.Members != null)
+                    {
+                        for (int i = 0; i < nex.Members.Count; i++)
+                        {
+                            if (nex.Members[i].Name == member.Name)
+                                return nex.Arguments[i];
+                        }
+                    }
+
                     return null;
                 }
             }
