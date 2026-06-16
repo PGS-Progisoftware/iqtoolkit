@@ -164,6 +164,29 @@ namespace IQToolkit.Data.Advantage.Tests
                         // Children for Parent2 (1, 20)
                         cmd.CommandText = "INSERT INTO CompositeChildren (ChildId, ParentKeyA, ParentKeyB, Data) VALUES (3, 1, 20, 'Child1_P2')";
                         cmd.ExecuteNonQuery();
+
+                        // Create CharDateTimeTable — DTMAJ_RAW is CHAR(12) storing "yyyyMMddHHmm"
+                        cmd.CommandText = @"
+                            CREATE TABLE CharDateTimeTable (
+                                Id Integer,
+                                Label Char(50),
+                                DTMAJ_RAW Char(12)
+                            )
+                        ";
+                        cmd.ExecuteNonQuery();
+
+                        // Row 1: 2023-06-15 10:30
+                        cmd.CommandText = "INSERT INTO CharDateTimeTable (Id, Label, DTMAJ_RAW) VALUES (1, 'Alpha', '202306151030')";
+                        cmd.ExecuteNonQuery();
+                        // Row 2: 2023-06-15 14:45
+                        cmd.CommandText = "INSERT INTO CharDateTimeTable (Id, Label, DTMAJ_RAW) VALUES (2, 'Beta', '202306151445')";
+                        cmd.ExecuteNonQuery();
+                        // Row 3: 2023-06-16 09:00
+                        cmd.CommandText = "INSERT INTO CharDateTimeTable (Id, Label, DTMAJ_RAW) VALUES (3, 'Gamma', '202306160900')";
+                        cmd.ExecuteNonQuery();
+                        // Row 4: NULL date/time
+                        cmd.CommandText = "INSERT INTO CharDateTimeTable (Id, Label, DTMAJ_RAW) VALUES (4, 'Delta', NULL)";
+                        cmd.ExecuteNonQuery();
                     }
                 }
                 // _initialized = true;

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using IQToolkit.Data.Mapping;
 using IQToolkit.Data.Advantage;
 
@@ -119,6 +120,50 @@ namespace IQToolkit.Data.Advantage.Tests
 
         [Association(KeyMembers = "ParentKeyA,ParentKeyB", RelatedKeyMembers = "KeyA,KeyB", IsForeignKey = true)]
         public CompositeParent Parent { get; set; }
+    }
+
+    /// <summary>
+    /// Entity for CharDateTimeField tests.
+    /// DTMAJ is stored as CHAR(12) in "yyyyMMddHHmm" format.
+    /// </summary>
+    [Table(Name = "CharDateTimeTable")]
+    public class CharDateTimeEntity
+    {
+        [Column(IsPrimaryKey = true)]
+        public int Id { get; set; }
+
+        public string Label { get; set; }
+
+        /// <summary>Raw CHAR(12) column storing "yyyyMMddHHmm".</summary>
+        [Column(DbType = "Char(12)")]
+        public string DTMAJ_RAW { get; set; }
+
+        private DateTime? _dtmaj;
+
+        /// <summary>Virtual property backed by <see cref="DTMAJ_RAW"/>.</summary>
+        [CharDateTimeField(Member = nameof(DTMAJ_RAW), Format = "yyyyMMddHHmm")]
+        public DateTime? DTMAJ
+        {
+            get
+            {
+                if (_dtmaj == null && DTMAJ_RAW != null)
+                {
+                    var raw = DTMAJ_RAW.Trim();
+                    if (raw.Length > 0 &&
+                        DateTime.TryParseExact(raw, "yyyyMMddHHmm", CultureInfo.InvariantCulture,
+                            DateTimeStyles.None, out var dt))
+                    {
+                        _dtmaj = dt;
+                    }
+                }
+                return _dtmaj;
+            }
+            set
+            {
+                _dtmaj = value;
+                DTMAJ_RAW = value?.ToString("yyyyMMddHHmm");
+            }
+        }
     }
 
     public static class Utils

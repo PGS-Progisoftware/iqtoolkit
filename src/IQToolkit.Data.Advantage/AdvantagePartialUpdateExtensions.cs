@@ -25,6 +25,20 @@ namespace IQToolkit.Data.Advantage
             }
         }
 
+        private sealed class CharDateTimeFieldInfo
+        {
+            public MemberInfo VirtualMember { get; }
+            public MemberInfo CharMember { get; }
+            public string Format { get; }
+
+            public CharDateTimeFieldInfo(MemberInfo virtualMember, MemberInfo charMember, string format)
+            {
+                VirtualMember = virtualMember;
+                CharMember = charMember;
+                Format = format;
+            }
+        }
+
         /// <summary>
         /// Partial update based on an existing entity instance.
         /// Requires a prior SELECT to obtain the entity.
@@ -613,6 +627,24 @@ namespace IQToolkit.Data.Advantage
                     continue;
                 }
 
+                // CharDateTimeField expansion (e.g. DTMAJ => DTMAJ_RAW as formatted string)
+                var charDt = GetCharDateTimeFieldInfo(entityMeta, mapping, member);
+                if (charDt != null)
+                {
+                    object raw = member.GetValue(entityInstance);
+                    var formattedValue = FormatCharDateTime(raw, charDt.Format);
+
+                    var charClrType = typeof(string);
+                    var charQt = language.TypeSystem.GetColumnType(charClrType);
+                    var charName = mapping.GetColumnName(entityMeta, charDt.CharMember);
+
+                    var charCol = new ColumnExpression(charClrType, charQt, tex.Alias, charName);
+                    var charExpr = Expression.Constant(formattedValue, typeof(string));
+                    assignments.Add(new ColumnAssignment(charCol, charExpr));
+
+                    continue;
+                }
+
                 // Only simple column members that are updatable
                 if (!mapping.IsColumn(entityMeta, member))
                     continue;
@@ -744,6 +776,24 @@ namespace IQToolkit.Data.Advantage
                     continue;
                 }
 
+                // CharDateTimeField expansion
+                var charDtFromSet = GetCharDateTimeFieldInfo(entityMeta, mapping, targetMember);
+                if (charDtFromSet != null)
+                {
+                    object rawValue = Evaluate(arg);
+                    var formattedValue = FormatCharDateTime(rawValue, charDtFromSet.Format);
+
+                    var charClrType = typeof(string);
+                    var charQt = language.TypeSystem.GetColumnType(charClrType);
+                    var charName = mapping.GetColumnName(entityMeta, charDtFromSet.CharMember);
+
+                    var charCol = new ColumnExpression(charClrType, charQt, tex.Alias, charName);
+                    var charExpr = Expression.Constant(formattedValue, typeof(string));
+                    assignments.Add(new ColumnAssignment(charCol, charExpr));
+
+                    continue;
+                }
+
                 if (!mapping.IsColumn(entityMeta, targetMember) || !mapping.IsUpdatable(entityMeta, targetMember))
                 {
                     continue;
@@ -826,6 +876,44 @@ namespace IQToolkit.Data.Advantage
             }
 
             return new CompositeFieldInfo(member, dateMember, timeMember);
+        }
+
+        private static CharDateTimeFieldInfo GetCharDateTimeFieldInfo(
+            MappingEntity entityMeta,
+            BasicMapping mapping,
+            MemberInfo member)
+        {
+            var attr = (CharDateTimeFieldAttribute)member
+                .GetCustomAttributes(typeof(CharDateTimeFieldAttribute), true)
+                .FirstOrDefault();
+            if (attr == null)
+                return null;
+
+            var type = entityMeta.StaticType;
+            var charMember = (MemberInfo)(type.GetProperty(attr.Member) ?? (MemberInfo)type.GetField(attr.Member));
+
+            if (charMember == null || !mapping.IsColumn(entityMeta, charMember) || !mapping.IsUpdatable(entityMeta, charMember))
+            {
+                throw new InvalidOperationException(
+                    $"CharDateTimeField '{member.Name}' on '{entityMeta.StaticType.Name}' requires a mapped, updatable member '{attr.Member}'. " +
+                    $"Check your mapping.");
+            }
+
+            return new CharDateTimeFieldInfo(member, charMember, attr.Format ?? "yyyyMMddHHmm");
+        }
+
+        private static string FormatCharDateTime(object value, string format)
+        {
+            if (value == null) return null;
+
+            var type = value.GetType();
+            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Nullable<>))
+            {
+                value = Convert.ChangeType(value, Nullable.GetUnderlyingType(type));
+                if (value == null) return null;
+            }
+
+            return ((DateTime)value).ToString(format);
         }
 
         private static Tuple<object, object> GetCompositeDateTimeComponents(object value)
