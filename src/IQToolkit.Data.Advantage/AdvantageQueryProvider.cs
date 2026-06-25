@@ -306,13 +306,39 @@ namespace IQToolkit.Data.Advantage
 				return cmd;
 			}
 
+			/// <summary>
+			/// ace64.dll returns ADS Error 1500 on the first-ever parameterized AdsPrepareSQLW
+			/// call in a fresh IIS process because aicu64.dll (Unicode support) is absent from
+			/// the deployment. After that single failure ace64.dll activates its ANSI fallback
+			/// permanently for the process lifetime, so a one-shot retry is sufficient.
+			/// The !isRetry guard ensures a genuine second 1500 (or any other error on retry)
+			/// propagates unconditionally — this is not a blanket swallow.
+			/// </summary>
+			private static bool IsAdsError(Exception ex, int number)
+			{
+				if (ex.GetType().Name != "AdsException") return false;
+				var prop = ex.GetType().GetProperty("Number");
+				return prop?.GetValue(ex) is int code && code == number;
+			}
+
+			// ExecuteNonQuery path (INSERT/UPDATE/DELETE and parameterized non-queries).
+			// Retry wraps above ExecuteWithTiming, so a cold-start 1500 will appear in the
+			// log as "Query FAILED" before the retry "Query completed" — acceptable and informative.
 			public override int ExecuteCommand(QueryCommand query, object[] paramValues)
 			{
-				if (_provider.EnableQueryTiming && _provider.Log != null)
+				for (bool isRetry = false; ; isRetry = true)
 				{
-					return ExecuteWithTiming(query, paramValues, base.ExecuteCommand);
+					try
+					{
+						if (_provider.EnableQueryTiming && _provider.Log != null)
+							return ExecuteWithTiming(query, paramValues, base.ExecuteCommand);
+						return base.ExecuteCommand(query, paramValues);
+					}
+					catch (Exception ex) when (!isRetry && IsAdsError(ex, 1500))
+					{
+						_provider.Log?.WriteLine("ADS ICU cold-start Error 1500 — retrying once on ANSI fallback path");
+					}
 				}
-				return base.ExecuteCommand(query, paramValues);
 			}
 
 			public override IEnumerable<T> Execute<T>(QueryCommand query, Func<FieldReader, T> fnProjector, MappingEntity entity, object[] paramValues)
@@ -322,6 +348,23 @@ namespace IQToolkit.Data.Advantage
 					return ExecuteWithTiming(query, paramValues, (q, p) => base.Execute<T>(q, fnProjector, entity, p));
 				}
 				return base.Execute<T>(query, fnProjector, entity, paramValues);
+			}
+
+			// ExecuteReader is called by base.Execute<T> via virtual dispatch, so the retry
+			// fires below ExecuteWithTiming — timing sees one clean execution, no failure log.
+			protected override DbDataReader ExecuteReader(DbCommand command)
+			{
+				for (bool isRetry = false; ; isRetry = true)
+				{
+					try
+					{
+						return base.ExecuteReader(command);
+					}
+					catch (Exception ex) when (!isRetry && IsAdsError(ex, 1500))
+					{
+						_provider.Log?.WriteLine("ADS ICU cold-start Error 1500 — retrying once on ANSI fallback path");
+					}
+				}
 			}
 
 			private TResult ExecuteWithTiming<TResult>(QueryCommand query, object[] paramValues, Func<QueryCommand, object[], TResult> executeFunc)
