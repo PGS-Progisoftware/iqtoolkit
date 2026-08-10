@@ -45,11 +45,22 @@ namespace IQToolkit.Data.Advantage.Tests
             Assert.True(results.Count > 0);
             Assert.All(results, r => Assert.NotNull(r.CombinedDateTime));
 
-            var row1 = Assert.Single(results, r => r.Id == 1);
-            Assert.Equal(new DateTime(2023, 1, 1, 10, 0, 0), row1.CombinedDateTime);
+            var byId = results.ToDictionary(r => r.Id);
+            Assert.Equal(new DateTime(2023, 1, 1, 10, 0, 0), byId[1].CombinedDateTime);
+            Assert.Equal(new DateTime(2023, 1, 1, 14, 30, 0), byId[2].CombinedDateTime);
+            Assert.Equal(new DateTime(2023, 1, 2, 9, 15, 0), byId[3].CombinedDateTime);
+        }
 
-            var row2 = Assert.Single(results, r => r.Id == 2);
-            Assert.Equal(new DateTime(2023, 1, 1, 14, 30, 0), row2.CombinedDateTime);
+        [Fact]
+        public void CompositeField_InProjection_IncludesTimeComponent()
+        {
+            var results = _provider.GetTable<TestEntity>()
+                .Where(t => t.Id == 2)
+                .Select(t => new { CombinedDateTime = t.CompositeDate })
+                .ToList();
+
+            Assert.Single(results);
+            Assert.Equal(new DateTime(2023, 1, 1, 14, 30, 0), results[0].CombinedDateTime);
         }
 
         [Fact(Skip = "Type mismatch between nullable and non-nullable when accessing .Value on composite")]
@@ -304,36 +315,12 @@ namespace IQToolkit.Data.Advantage.Tests
 
         #endregion
 
-        #region SQL Generation Validation
-
-        [Fact(Skip = "SQL generation with .Date property access needs additional member handling")]
-        public void CompositeField_GeneratesValidSQL()
-        {
-            // Test: Verify SQL can be generated without errors
-            var query = _provider.GetTable<TestEntity>()
-                .Select(t => new
-                {
-                    t.Id,
-                    DatePart = t.CompositeDate == null 
-                        ? t.CompositeDate 
-                        : (DateTime?)t.CompositeDate.Value.Date
-                });
-
-            var sql = _provider.GetQueryText(query.Expression);
-
-            // Should not throw and should contain expected elements
-            Assert.NotEmpty(sql);
-            Assert.Contains("SELECT", sql.ToUpper());
-            Assert.Contains("FROM", sql.ToUpper());
-            // Should contain CASE WHEN for the conditional
-            Assert.Contains("CASE", sql.ToUpper());
-        }
+        #region Complex Query
 
         [Fact]
-        public void CompositeField_ComplexQuery_GeneratesValidSQL()
+        public void CompositeField_ComplexQuery_ReturnsExpectedResults()
         {
-            // Test: Complex query similar to DevExpress pattern
-            var query = _provider.GetTable<TestEntity>()
+            var results = _provider.GetTable<TestEntity>()
                 .Where(t => t.Name != null)
                 .Where(t => t.DateCol != null)
                 .OrderByDescending(t => t.Id)
@@ -343,14 +330,16 @@ namespace IQToolkit.Data.Advantage.Tests
                     t.Name,
                     ProjectedDate = t.CompositeDate,
                     t.Value
-                });
+                })
+                .ToList();
 
-            var sql = _provider.GetQueryText(query.Expression);
-
-            Assert.NotEmpty(sql);
-            Assert.Contains("SELECT", sql.ToUpper());
-            Assert.Contains("WHERE", sql.ToUpper());
-            Assert.Contains("ORDER BY", sql.ToUpper());
+            Assert.Equal(3, results.Count);
+            Assert.Equal(3, results[0].Id);
+            Assert.Equal(2, results[1].Id);
+            Assert.Equal(1, results[2].Id);
+            Assert.Equal(new DateTime(2023, 1, 2, 9, 15, 0), results[0].ProjectedDate);
+            Assert.Equal(new DateTime(2023, 1, 1, 14, 30, 0), results[1].ProjectedDate);
+            Assert.Equal(new DateTime(2023, 1, 1, 10, 0, 0), results[2].ProjectedDate);
         }
 
         #endregion

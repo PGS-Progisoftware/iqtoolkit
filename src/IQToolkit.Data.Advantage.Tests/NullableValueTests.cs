@@ -256,19 +256,140 @@ namespace IQToolkit.Data.Advantage.Tests
         #region SQL Generation Validation
 
         [Fact]
-        public void NullableDateTime_Value_Generates_Correct_SQL()
+        public void NullableDateTime_Direct_Select_Scalar()
         {
-            // Test: Verify SQL generation for nullable.Value
-            // The .Value should be removed in SQL translation
-            var query = _provider.GetTable<TestEntity>()
-                .Select(t => new { t.Id, Date = t.DateCol.Value });
+            var results = _provider.GetTable<TestEntity>()
+                .Select(t => t.DateCol)
+                .Take(1)
+                .ToList();
+            Assert.Single(results);
+        }
 
-            var sql = _provider.GetQueryText(query.Expression);
+        [Fact]
+        public void NullableDateTime_OrderBy_CompositeField_Before_Select_Skip_Take()
+        {
+            var exception = Record.Exception(() =>
+            {
+                var results = _provider.GetTable<TestEntity>()
+                    .OrderBy(t => t.CompositeDate)
+                    .Select(t => new { t.Id, DTModification = t.CompositeDate })
+                    .Skip(0)
+                    .Take(50)
+                    .ToList();
 
-            // SQL should NOT contain ".Value" string
-            Assert.DoesNotContain(".Value", sql);
-            // SQL should contain the column name
-            Assert.Contains("DateCol", sql);
+                Assert.True(results.Count > 0);
+            });
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
+        public void NullableDateTime_OrderBy_Before_Select_With_Skip_Take()
+        {
+            // Gridify pattern: OrderBy(entity => DTModification).Select(DTO).Skip().Take()
+            var exception = Record.Exception(() =>
+            {
+                var results = _provider.GetTable<TestEntity>()
+                    .OrderBy(t => t.DateCol)
+                    .Select(t => new TestEntityDTO
+                    {
+                        Id = t.Id,
+                        Name = t.Name,
+                        DateValue = t.DateCol ?? default
+                    })
+                    .Skip(0)
+                    .Take(50)
+                    .ToList();
+
+                Assert.True(results.Count > 0);
+            });
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
+        public void NullableDateTime_OrderBy_Before_Select_Direct_Nullable_In_DTO()
+        {
+            var exception = Record.Exception(() =>
+            {
+                var results = _provider.GetTable<TestEntity>()
+                    .OrderBy(t => t.DateCol)
+                    .Select(t => new
+                    {
+                        t.Id,
+                        DTModification = t.DateCol
+                    })
+                    .Skip(0)
+                    .Take(50)
+                    .ToList();
+
+                Assert.True(results.Count > 0);
+            });
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
+        public void NullableDateTime_OrderBy_Direct()
+        {
+            var results = _provider.GetTable<TestEntity>()
+                .OrderBy(t => t.DateCol)
+                .Take(1)
+                .ToList();
+            Assert.Single(results);
+        }
+
+        [Fact]
+        public void NullableDateTime_OrderBy_After_Projection()
+        {
+            var results = _provider.GetTable<TestEntity>()
+                .Select(t => new { DTModification = t.DateCol, t.Id })
+                .OrderBy(x => x.DTModification)
+                .Take(1)
+                .ToList();
+            Assert.Single(results);
+        }
+
+        [Fact]
+        public void NullableDateTime_Direct_Projection_Without_Value()
+        {
+            // Reproduces: "The member access 'System.Nullable`1[System.DateTime] DTModification' is not supported"
+            var exception = Record.Exception(() =>
+            {
+                var results = _provider.GetTable<TestEntity>()
+                    .Select(t => new { DTModification = t.DateCol })
+                    .Take(1)
+                    .ToList();
+
+                Assert.Single(results);
+            });
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
+        public void NullableDateTime_Direct_Projection_With_Count()
+        {
+            var count = _provider.GetTable<TestEntity>()
+                .Select(t => new { DTModification = t.DateCol })
+                .Count();
+
+            Assert.Equal(4, count);
+        }
+
+        [Fact]
+        public void NullableDateTime_Value_In_Projection_ReturnsExpectedDates()
+        {
+            var results = _provider.GetTable<TestEntity>()
+                .Where(t => t.DateCol.HasValue)
+                .Select(t => new { t.Id, Date = t.DateCol.Value })
+                .OrderBy(r => r.Id)
+                .ToList();
+
+            Assert.Equal(3, results.Count);
+            Assert.Equal(new DateTime(2023, 1, 1), results[0].Date.Date);
+            Assert.Equal(new DateTime(2023, 1, 1), results[1].Date.Date);
+            Assert.Equal(new DateTime(2023, 1, 2), results[2].Date.Date);
         }
 
         #endregion

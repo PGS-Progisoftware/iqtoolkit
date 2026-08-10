@@ -72,6 +72,12 @@ namespace IQToolkit
         private static readonly char[] splitters = new char[] { '\n', '\r' };
         protected void Write(string text)
         {
+            if (text == null)
+            {
+                this.writer.Write("(null)");
+                return;
+            }
+
             if (text.IndexOf('\n') >= 0)
             {
                 string[] lines = text.Split(splitters, StringSplitOptions.RemoveEmptyEntries);
@@ -395,7 +401,7 @@ namespace IQToolkit
                 this.Write("(");
                 for (int i = 0, n = lambda.Parameters.Count; i < n; i++)
                 {
-                    this.Write(lambda.Parameters[i].Name);
+                    this.Write(lambda.Parameters[i].Name ?? "?");
                     if (i < n - 1)
                     {
                         this.Write(", ");
@@ -405,7 +411,7 @@ namespace IQToolkit
             }
             else
             {
-                this.Write(lambda.Parameters[0].Name);
+                this.Write(lambda.Parameters[0].Name ?? "?");
             }
             this.Write(" => ");
             this.Visit(lambda.Body);
@@ -524,7 +530,7 @@ namespace IQToolkit
 
         protected override Expression VisitParameter(ParameterExpression p)
         {
-            this.Write(p.Name);
+            this.Write(p.Name ?? "?");
             return p;
         }
 
@@ -538,7 +544,7 @@ namespace IQToolkit
 
         protected override Expression VisitUnknown(Expression expression)
         {
-            this.Write(expression.ToString());
+            this.Write(expression?.ToString() ?? $"<{expression?.GetType().Name ?? "null"}>");
             return expression;
         }
     }

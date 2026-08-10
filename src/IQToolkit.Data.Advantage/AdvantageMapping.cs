@@ -9,8 +9,9 @@ using IQToolkit.Data.Mapping;
 namespace IQToolkit.Data.Advantage
 {
 	/// <summary>
-	/// Advantage-specific mapping that handles CompositeField properties.
+	/// Advantage-specific mapping that handles CompositeField and CharDateTimeField properties.
 	/// Composite fields combine date and time columns into a single DateTime property.
+	/// CharDateTimeField stores a DateTime as a single CHAR column with a configurable format.
 	/// </summary>
 	public class AdvantageMapping : AttributeMapping
 	{
@@ -20,11 +21,14 @@ namespace IQToolkit.Data.Advantage
 		}
 
 		/// <summary>
-		/// Composite field properties are NOT database columns.
+		/// Composite and CharDateTimeField virtual properties are NOT database columns.
 		/// </summary>
 		public override bool IsColumn(MappingEntity entity, MemberInfo member)
 		{
 			if (HasCompositeFieldAttribute(member))
+				return false;
+
+			if (HasCharDateTimeFieldAttribute(member))
 				return false;
 
 			return base.IsColumn(entity, member);
@@ -44,6 +48,17 @@ namespace IQToolkit.Data.Advantage
 		{
 			var attrs = member.GetCustomAttributes(typeof(CompositeFieldAttribute), true);
 			return attrs.Length > 0 ? (CompositeFieldAttribute)attrs[0] : null;
+		}
+
+		private static bool HasCharDateTimeFieldAttribute(MemberInfo member)
+		{
+			return member.GetCustomAttributes(typeof(CharDateTimeFieldAttribute), true).Length > 0;
+		}
+
+		private static CharDateTimeFieldAttribute GetCharDateTimeFieldAttribute(MemberInfo member)
+		{
+			var attrs = member.GetCustomAttributes(typeof(CharDateTimeFieldAttribute), true);
+			return attrs.Length > 0 ? (CharDateTimeFieldAttribute)attrs[0] : null;
 		}
 
 		/// <summary>
@@ -69,23 +84,29 @@ namespace IQToolkit.Data.Advantage
 
 				// Step 1: Rewrite composite field comparisons (e.g., DTDEP > x) into date/time logic
 				expression = AdvantageCompositeFieldRewriter.Rewrite(expression);
+				// Step 1': Rewrite CharDateTimeField comparisons (e.g., DTMAJ > x) into string comparison logic
+				expression = AdvantageCharDateTimeFieldRewriter.Rewrite(expression);
 				
-				// Step 1b: Expand composite fields in SELECT projections BEFORE binding
-				// This is critical: composite fields must be replaced with their underlying columns
-				// BEFORE QueryBinder creates the projection, otherwise the composite field reference
+				// Step 1b: Expand composite/CharDateTime fields in SELECT projections BEFORE binding
+				// This is critical: virtual fields must be replaced with their underlying columns
+				// BEFORE QueryBinder creates the projection, otherwise the virtual field reference
 				// gets baked into the query tree and SqlFormatter can't handle it.
 				expression = CompositeFieldProjectionExpander.Expand(expression, _mapping);
 
 				// Step 2: Normal translation (binding, optimization, etc.)
 				expression = base.Translate(expression);
 
-				// Step 2b: Rewrite composite field comparisons AGAIN (e.g. inside Where clauses after ProjectTo)
-				// This handles cases where composite fields were hidden by projections and are now exposed as MemberAccess on TableExpression
+				// Step 2b: Rewrite composite / CharDateTime field comparisons AGAIN (e.g. inside Where clauses after ProjectTo)
 				expression = AdvantageCompositeFieldRewriter.Rewrite(expression);
+				expression = AdvantageCharDateTimeFieldRewriter.Rewrite(expression);
 
 				// Step 2c: Convert MemberAccess on TableExpression/EntityExpression to ColumnExpression
 				// This is needed because Step 2b introduces MemberAccess to underlying columns (Date/Time)
 				// but SqlFormatter expects ColumnExpressions.
+				expression = Columnizer.Columnize(expression, this);
+
+				// Step 2c2: ORDER BY on composite fields must sort by underlying date/time columns
+				expression = OrderByCompositeFieldRewriter.Rewrite(this, expression);
 				expression = Columnizer.Columnize(expression, this);
 				
 				// Step 2d: Fix GROUP BY expressions that reference columns from projections with navigation properties
@@ -94,6 +115,7 @@ namespace IQToolkit.Data.Advantage
 				
 				// Step 3: Expand composite field accesses in SELECT to underlying columns
 				expression = CompositeFieldExpander.Expand(expression);
+				expression = Columnizer.Columnize(expression, this);
 
 				return expression;
 			}
@@ -121,8 +143,8 @@ namespace IQToolkit.Data.Advantage
                 // Check if accessing a member on a TableExpression
                 if (m.Expression is TableExpression tex)
                 {
-                    // DON'T columnize composite fields - let CompositeFieldExpander handle them
-                    if (HasCompositeFieldAttribute(m.Member))
+                    // DON'T columnize virtual fields - let expanders handle them
+                    if (HasCompositeFieldAttribute(m.Member) || HasCharDateTimeFieldAttribute(m.Member))
                     {
                         return base.VisitMemberAccess(m);
                     }
@@ -140,8 +162,8 @@ namespace IQToolkit.Data.Advantage
                 // Check if accessing a member on an EntityExpression
                 else if (m.Expression is EntityExpression ex)
                 {
-                     // DON'T columnize composite fields - let CompositeFieldExpander handle them
-                     if (HasCompositeFieldAttribute(m.Member))
+                     // DON'T columnize virtual fields - let expanders handle them
+                     if (HasCompositeFieldAttribute(m.Member) || HasCharDateTimeFieldAttribute(m.Member))
                      {
                          return base.VisitMemberAccess(m);
                      }
@@ -191,6 +213,219 @@ namespace IQToolkit.Data.Advantage
                         }
                     }
                     
+                    return null;
+                }
+            }
+
+            class OrderByCompositeFieldRewriter : DbExpressionVisitor
+            {
+                private readonly AdvantageMapper mapper;
+                private readonly AdvantageMapping mapping;
+
+                private OrderByCompositeFieldRewriter(AdvantageMapper mapper)
+                {
+                    this.mapper = mapper;
+                    this.mapping = mapper._mapping;
+                }
+
+                public static Expression Rewrite(AdvantageMapper mapper, Expression expression)
+                {
+                    return new OrderByCompositeFieldRewriter(mapper).Visit(expression);
+                }
+
+                protected override Expression VisitSelect(SelectExpression select)
+                {
+                    select = (SelectExpression)base.VisitSelect(select);
+
+                    if (select.OrderBy == null || select.OrderBy.Count == 0)
+                        return select;
+
+                    var newOrderings = new List<OrderExpression>();
+                    bool changed = false;
+
+                    foreach (var order in select.OrderBy)
+                    {
+                        if (TryExpandCompositeOrderBy(order, out var expanded))
+                        {
+                            changed = true;
+                            newOrderings.AddRange(expanded);
+                        }
+                        else
+                        {
+                            newOrderings.Add(order);
+                        }
+                    }
+
+                    return changed ? select.SetOrderBy(newOrderings) : select;
+                }
+
+                private bool TryExpandCompositeOrderBy(OrderExpression order, out List<OrderExpression> orderings)
+                {
+                    orderings = null;
+
+                    if (!(order.Expression is MemberExpression compositeAccess))
+                        return false;
+
+                    // Handle CharDateTimeField (single backing CHAR column)
+                    var charAttr = GetCharDateTimeFieldAttribute(compositeAccess.Member);
+                    if (charAttr != null)
+                    {
+                        if (!TryGetCharDateTimeColumnExpression(compositeAccess, charAttr, out var charExpr))
+                            return false;
+
+                        orderings = new List<OrderExpression>
+                        {
+                            new OrderExpression(order.OrderType, charExpr)
+                        };
+                        return true;
+                    }
+
+                    // Handle CompositeField (date + time backing columns)
+                    var attr = GetCompositeFieldAttribute(compositeAccess.Member);
+                    if (attr == null)
+                        return false;
+
+                    if (!TryGetUnderlyingColumnExpressions(compositeAccess, attr, out var dateExpr, out var timeExpr))
+                        return false;
+
+                    orderings = new List<OrderExpression>
+                    {
+                        new OrderExpression(order.OrderType, dateExpr),
+                        new OrderExpression(order.OrderType, timeExpr)
+                    };
+                    return true;
+                }
+
+                private bool TryGetCharDateTimeColumnExpression(
+                    MemberExpression virtualAccess,
+                    CharDateTimeFieldAttribute attr,
+                    out Expression charExpr)
+                {
+                    charExpr = null;
+
+                    MappingEntity entity = null;
+                    Expression entityBody = null;
+                    TableAlias alias = null;
+
+                    if (virtualAccess.Expression is EntityExpression entityExpression)
+                    {
+                        entity = entityExpression.Entity;
+                        entityBody = entityExpression.Expression;
+                        if (entityBody is AliasedExpression aliased)
+                            alias = aliased.Alias;
+                    }
+                    else if (virtualAccess.Expression is TableExpression tableExpression)
+                    {
+                        entity = tableExpression.Entity;
+                        alias = tableExpression.Alias;
+                    }
+                    else
+                    {
+                        return false;
+                    }
+
+                    var charMember = (MemberInfo)entity.StaticType.GetProperty(attr.Member)
+                                     ?? entity.StaticType.GetField(attr.Member);
+                    if (charMember == null)
+                        return false;
+
+                    if (entityBody != null)
+                        charExpr = ColumnizerFindMemberInEntity(entityBody, charMember);
+
+                    if (charExpr == null && alias != null && mapping.IsColumn(entity, charMember))
+                        charExpr = CreateColumnExpression(entity, charMember, alias);
+
+                    return charExpr != null;
+                }
+
+                private bool TryGetUnderlyingColumnExpressions(
+                    MemberExpression compositeAccess,
+                    CompositeFieldAttribute attr,
+                    out Expression dateExpr,
+                    out Expression timeExpr)
+                {
+                    dateExpr = null;
+                    timeExpr = null;
+
+                    MappingEntity entity = null;
+                    Expression entityBody = null;
+                    TableAlias alias = null;
+
+                    if (compositeAccess.Expression is EntityExpression entityExpression)
+                    {
+                        entity = entityExpression.Entity;
+                        entityBody = entityExpression.Expression;
+                        if (entityBody is AliasedExpression aliased)
+                            alias = aliased.Alias;
+                    }
+                    else if (compositeAccess.Expression is TableExpression tableExpression)
+                    {
+                        entity = tableExpression.Entity;
+                        alias = tableExpression.Alias;
+                    }
+                    else
+                    {
+                        return false;
+                    }
+
+                    var entityType = entity.StaticType;
+                    var dateMember = (MemberInfo)entityType.GetProperty(attr.DateMember)
+                                     ?? entityType.GetField(attr.DateMember);
+                    var timeMember = (MemberInfo)entityType.GetProperty(attr.TimeMember)
+                                     ?? entityType.GetField(attr.TimeMember);
+
+                    if (dateMember == null || timeMember == null)
+                        return false;
+
+                    if (entityBody != null)
+                    {
+                        dateExpr = ColumnizerFindMemberInEntity(entityBody, dateMember);
+                        timeExpr = ColumnizerFindMemberInEntity(entityBody, timeMember);
+                    }
+
+                    if (dateExpr == null && alias != null && mapping.IsColumn(entity, dateMember))
+                    {
+                        dateExpr = CreateColumnExpression(entity, dateMember, alias);
+                    }
+
+                    if (timeExpr == null && alias != null && mapping.IsColumn(entity, timeMember))
+                    {
+                        timeExpr = CreateColumnExpression(entity, timeMember, alias);
+                    }
+
+                    return dateExpr != null && timeExpr != null;
+                }
+
+                private ColumnExpression CreateColumnExpression(MappingEntity entity, MemberInfo member, TableAlias alias)
+                {
+                    return new ColumnExpression(
+                        TypeHelper.GetMemberType(member),
+                        mapper.GetColumnType(entity, member),
+                        alias,
+                        mapping.GetColumnName(entity, member));
+                }
+
+                private static Expression ColumnizerFindMemberInEntity(Expression entityExpression, MemberInfo member)
+                {
+                    if (entityExpression is MemberInitExpression minit)
+                    {
+                        foreach (var binding in minit.Bindings.OfType<MemberAssignment>())
+                        {
+                            if (binding.Member.Name == member.Name)
+                                return binding.Expression;
+                        }
+                        return ColumnizerFindMemberInEntity(minit.NewExpression, member);
+                    }
+
+                    if (entityExpression is NewExpression nex && nex.Members != null)
+                    {
+                        for (int i = 0; i < nex.Members.Count; i++)
+                        {
+                            if (nex.Members[i].Name == member.Name)
+                                return nex.Arguments[i];
+                        }
+                    }
+
                     return null;
                 }
             }
@@ -357,29 +592,45 @@ namespace IQToolkit.Data.Advantage
 					if (_mapping.IsAssociationRelationship(entity, mi))
 						continue;
 
-					// For composite fields, include their underlying columns instead
-					if (HasCompositeFieldAttribute(mi))
+				// For composite fields, include their underlying date/time columns instead
+				if (HasCompositeFieldAttribute(mi))
+				{
+					var attr = GetCompositeFieldAttribute(mi);
+					var dateMember = entity.StaticType.GetProperty(attr.DateMember) ?? (MemberInfo)entity.StaticType.GetField(attr.DateMember);
+					var timeMember = entity.StaticType.GetProperty(attr.TimeMember) ?? (MemberInfo)entity.StaticType.GetField(attr.TimeMember);
+					
+					if (!assignments.Any(a => a.Member == dateMember))
 					{
-						var attr = GetCompositeFieldAttribute(mi);
-						var dateMember = entity.StaticType.GetProperty(attr.DateMember) ?? (MemberInfo)entity.StaticType.GetField(attr.DateMember);
-						var timeMember = entity.StaticType.GetProperty(attr.TimeMember) ?? (MemberInfo)entity.StaticType.GetField(attr.TimeMember);
-						
-						if (!assignments.Any(a => a.Member == dateMember))
-						{
-							var dateExpr = base.GetMemberExpression(root, entity, dateMember);
-							if (dateExpr != null)
-								assignments.Add(new EntityAssignment(dateMember, dateExpr));
-						}
-						
-						if (!assignments.Any(a => a.Member == timeMember))
-						{
-							var timeExpr = base.GetMemberExpression(root, entity, timeMember);
-							if (timeExpr != null)
-								assignments.Add(new EntityAssignment(timeMember, timeExpr));
-						}
-						
-						continue;
+						var dateExpr = base.GetMemberExpression(root, entity, dateMember);
+						if (dateExpr != null)
+							assignments.Add(new EntityAssignment(dateMember, dateExpr));
 					}
+					
+					if (!assignments.Any(a => a.Member == timeMember))
+					{
+						var timeExpr = base.GetMemberExpression(root, entity, timeMember);
+						if (timeExpr != null)
+							assignments.Add(new EntityAssignment(timeMember, timeExpr));
+					}
+					
+					continue;
+				}
+
+				// For CharDateTimeField, include the single backing CHAR column instead
+				if (HasCharDateTimeFieldAttribute(mi))
+				{
+					var charAttr = GetCharDateTimeFieldAttribute(mi);
+					var charMember = entity.StaticType.GetProperty(charAttr.Member) ?? (MemberInfo)entity.StaticType.GetField(charAttr.Member);
+
+					if (charMember != null && !assignments.Any(a => a.Member == charMember))
+					{
+						var charExpr = base.GetMemberExpression(root, entity, charMember);
+						if (charExpr != null)
+							assignments.Add(new EntityAssignment(charMember, charExpr));
+					}
+
+					continue;
+				}
 
 					var me = base.GetMemberExpression(root, entity, mi);
 					if (me != null)
@@ -758,8 +1009,9 @@ namespace IQToolkit.Data.Advantage
 
 		/// <summary>
 		/// Expands composite fields in SELECT projections BEFORE binding.
-		/// This rewrites locgen.DTDepartMateriel to locgen.DATEDEP so the projection
-		/// binds to the actual database column, not the virtual composite field.
+		/// Rewrites e.g. locgen.DTDepartMateriel to
+		/// new LocGen { DATEDEP = locgen.DATEDEP, HEUREDEP = locgen.HEUREDEP }.DTDepartMateriel
+		/// so both backing columns are selected and the composite getter merges date+time client-side.
 		/// Only rewrites when inside a MemberInit or New expression (DTO creation).
 		/// </summary>
 		private class CompositeFieldProjectionExpander : ExpressionVisitor
@@ -802,12 +1054,33 @@ namespace IQToolkit.Data.Advantage
 				// Visit the source first
 				var source = this.Visit(m.Expression);
 
-				// Only rewrite composite fields when inside a projection
-				if (insideProjection && HasCompositeFieldAttribute(m.Member))
+				// Only rewrite virtual fields when inside a projection
+				if (insideProjection && m.Expression != null)
 				{
 					var expanded = ExpandCompositeProjection(m.Member, source ?? m.Expression);
 					if (expanded != null)
 						return expanded;
+
+					// CharDateTimeField: expand to minimal entity with single backing CHAR member
+					if (HasCharDateTimeFieldAttribute(m.Member))
+					{
+						var charAttr = GetCharDateTimeFieldAttribute(m.Member);
+						if (charAttr != null)
+						{
+							var entityType = m.Expression.Type;
+							var charMember = (MemberInfo)entityType.GetProperty(charAttr.Member) ??
+							                 entityType.GetField(charAttr.Member);
+
+							if (charMember != null)
+							{
+								var minimalEntity = Expression.MemberInit(
+									Expression.New(entityType),
+									Expression.Bind(charMember, Expression.MakeMemberAccess(source, charMember))
+								);
+								return Expression.MakeMemberAccess(minimalEntity, m.Member);
+							}
+						}
+					}
 				}
 
 				// Reconstruct if source changed
@@ -932,23 +1205,23 @@ namespace IQToolkit.Data.Advantage
 					return m;
 				}
 				
-				// PRIORITY 3: Handle direct composite field access
-				if (HasCompositeFieldAttribute(m.Member))
-				{
-					var expanded = ExpandCompositeField(m);
-					if (expanded != null)
-						return expanded;
-				}
-				
-				// PRIORITY 4: Handle composite field through entity expression
-				if (source != null && 
-			    source.NodeType == (ExpressionType)DbExpressionType.Entity && 
-			    HasCompositeFieldAttribute(m.Member))
-				{
-					var expanded = ExpandFromEntity((EntityExpression)source, m.Member);
-					if (expanded != null)
-						return expanded;
-				}
+			// PRIORITY 3: Handle direct composite/CharDateTime field access
+			if (HasCompositeFieldAttribute(m.Member) || HasCharDateTimeFieldAttribute(m.Member))
+			{
+				var expanded = ExpandCompositeField(m);
+				if (expanded != null)
+					return expanded;
+			}
+			
+			// PRIORITY 4: Handle composite/CharDateTime field through entity expression
+			if (source != null && 
+		    source.NodeType == (ExpressionType)DbExpressionType.Entity && 
+		    (HasCompositeFieldAttribute(m.Member) || HasCharDateTimeFieldAttribute(m.Member)))
+			{
+				var expanded = ExpandFromEntity((EntityExpression)source, m.Member);
+				if (expanded != null)
+					return expanded;
+			}
 				
 				if (source != m.Expression)
 					return Expression.MakeMemberAccess(source, m.Member);
@@ -970,33 +1243,54 @@ namespace IQToolkit.Data.Advantage
 				return null;
 			}
 			
-			private Expression ExpandFromEntity(EntityExpression entityExpr, MemberInfo compositeMember)
+		private Expression ExpandFromEntity(EntityExpression entityExpr, MemberInfo virtualMember)
+		{
+			// CompositeField: two backing columns (date + time)
+			var compositeAttr = GetCompositeFieldAttribute(virtualMember);
+			if (compositeAttr != null)
 			{
-				var attr = GetCompositeFieldAttribute(compositeMember);
-				if (attr == null) return null;
-				
-				var dateMember = entityExpr.Entity.StaticType.GetProperty(attr.DateMember) ?? 
-					(MemberInfo)entityExpr.Entity.StaticType.GetField(attr.DateMember);
-				var timeMember = entityExpr.Entity.StaticType.GetProperty(attr.TimeMember) ?? 
-					(MemberInfo)entityExpr.Entity.StaticType.GetField(attr.TimeMember);
+				var dateMember = entityExpr.Entity.StaticType.GetProperty(compositeAttr.DateMember) ?? 
+					(MemberInfo)entityExpr.Entity.StaticType.GetField(compositeAttr.DateMember);
+				var timeMember = entityExpr.Entity.StaticType.GetProperty(compositeAttr.TimeMember) ?? 
+					(MemberInfo)entityExpr.Entity.StaticType.GetField(compositeAttr.TimeMember);
 				
 				var dateExpr = FindMemberInEntity(entityExpr.Expression, dateMember);
 				var timeExpr = FindMemberInEntity(entityExpr.Expression, timeMember);
 				
 				if (dateExpr != null && timeExpr != null)
 				{
-					// Create a minimal entity with just the two columns, then access the composite field
 					var minimalEntity = Expression.MemberInit(
 						Expression.New(entityExpr.Entity.RuntimeType),
 						Expression.Bind(dateMember, dateExpr),
 						Expression.Bind(timeMember, timeExpr)
 					);
-					
-					return Expression.MakeMemberAccess(minimalEntity, compositeMember);
+					return Expression.MakeMemberAccess(minimalEntity, virtualMember);
 				}
-				
 				return null;
 			}
+
+			// CharDateTimeField: single backing CHAR column
+			var charAttr = GetCharDateTimeFieldAttribute(virtualMember);
+			if (charAttr != null)
+			{
+				var charMember = entityExpr.Entity.StaticType.GetProperty(charAttr.Member) ?? 
+					(MemberInfo)entityExpr.Entity.StaticType.GetField(charAttr.Member);
+
+				var charExpr = FindMemberInEntity(entityExpr.Expression, charMember);
+
+				if (charExpr != null)
+				{
+					var minimalEntity = Expression.MemberInit(
+						Expression.New(entityExpr.Entity.RuntimeType),
+						Expression.Bind(charMember, charExpr)
+					);
+					return Expression.MakeMemberAccess(minimalEntity, virtualMember);
+				}
+				return null;
+			}
+
+			return null;
+		}
 			
 			private Expression FindMemberInEntity(Expression entityExpression, MemberInfo member)
 			{
