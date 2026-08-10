@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Xunit;
 
@@ -81,6 +82,29 @@ namespace IQToolkit.Data.Advantage.Tests
 
             var updated = customers.Single(c => c.CustomerId == 10);
             Assert.Equal("Milan", updated.City.Trim());
+        }
+
+        [Fact]
+        public void BatchUpdatePartial_SingleColumn()
+        {
+            var provider = GetProvider();
+            var customers = provider.GetTable<Customer>("Customers");
+
+            var updates = new Dictionary<int, string>
+            {
+                [1] = "BatchCity1",
+                [2] = "BatchCity2",
+                [3] = "BatchCity3",
+            };
+
+            var results = customers.BatchUpdatePartial(c => c.City, updates).ToList();
+
+            Assert.Equal(3, results.Count);
+            Assert.All(results, r => Assert.Equal(1, r));
+
+            Assert.Equal("BatchCity1", customers.GetById(1).City.Trim());
+            Assert.Equal("BatchCity2", customers.GetById(2).City.Trim());
+            Assert.Equal("BatchCity3", customers.GetById(3).City.Trim());
         }
 
         [Fact]

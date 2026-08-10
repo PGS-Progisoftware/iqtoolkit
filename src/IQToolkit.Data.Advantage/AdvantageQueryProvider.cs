@@ -15,7 +15,31 @@ namespace IQToolkit.Data.Advantage
 
         public bool EnableInboundQueryLogging { get; set; }
 
-        public Func<Expression, string> InboundQueryFormatter { get; set; } = static expr => IQToolkit.ExpressionWriter.WriteToString(expr);
+        public Func<Expression, string> InboundQueryFormatter { get; set; } = FormatInboundExpression;
+
+        private static string FormatInboundExpression(Expression expression)
+        {
+            if (expression == null)
+            {
+                return "(null)";
+            }
+
+            try
+            {
+                return AdvantageExpressionWriter.WriteToString(expression);
+            }
+            catch
+            {
+                try
+                {
+                    return expression.ToString();
+                }
+                catch (Exception ex)
+                {
+                    return $"(failed to format expression: {ex.Message})";
+                }
+            }
+        }
 
 		/// <summary>
 		/// Logs the actual <see cref="DbCommand"/> (SQL + bound ADO parameter values) that will be
@@ -401,7 +425,9 @@ namespace IQToolkit.Data.Advantage
                 try
                 {
                     this.Log.WriteLine("-- LINQ (inbound)");
-                    this.Log.WriteLine(this.InboundQueryFormatter?.Invoke(expression) ?? expression?.ToString());
+                    this.Log.WriteLine(this.InboundQueryFormatter != null
+                        ? this.InboundQueryFormatter(expression)
+                        : FormatInboundExpression(expression));
                     this.Log.WriteLine();
                 }
                 catch (Exception ex)
@@ -412,6 +438,50 @@ namespace IQToolkit.Data.Advantage
             }
 
             return base.GetExecutionPlan(expression);
+        }
+
+        // Core CommandGatherer throws on CLR Block; keep workaround in Advantage only.
+        public override string GetQueryText(Expression expression)
+        {
+            Expression plan = this.GetExecutionPlan(expression);
+            var commands = BlockAwareCommandGatherer.Gather(plan);
+            return string.Join("\n\n", commands.Select(c => c.CommandText));
+        }
+
+        private sealed class BlockAwareCommandGatherer : DbExpressionVisitor
+        {
+            private readonly List<QueryCommand> commands = new List<QueryCommand>();
+
+            public static List<QueryCommand> Gather(Expression expression)
+            {
+                var gatherer = new BlockAwareCommandGatherer();
+                gatherer.Visit(expression);
+                return gatherer.commands;
+            }
+
+            protected override Expression Visit(Expression exp)
+            {
+                if (exp != null && exp.NodeType == ExpressionType.Block)
+                {
+                    var block = (BlockExpression)exp;
+                    foreach (var expression in block.Expressions)
+                    {
+                        this.Visit(expression);
+                    }
+                    return exp;
+                }
+
+                return base.Visit(exp);
+            }
+
+            protected override Expression VisitConstant(ConstantExpression c)
+            {
+                if (c.Value is QueryCommand qc)
+                {
+                    this.commands.Add(qc);
+                }
+                return c;
+            }
         }
 	}
 }

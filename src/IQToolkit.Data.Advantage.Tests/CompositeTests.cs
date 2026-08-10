@@ -41,6 +41,20 @@ namespace IQToolkit.Data.Advantage.Tests
         }
 
         [Fact]
+        public void SelectCompositeDate_InAnonymousProjection_PreservesTime()
+        {
+            var provider = GetProvider();
+            var table = provider.GetTable<TestEntity>("TestTable");
+
+            var result = table
+                .Where(t => t.Id == 1)
+                .Select(t => new { t.Id, Combined = t.CompositeDate })
+                .Single();
+
+            Assert.Equal(new DateTime(2023, 1, 1, 10, 0, 0), result.Combined);
+        }
+
+        [Fact]
         public void WhereCompositeDate_GreaterThan()
         {
             var provider = GetProvider();

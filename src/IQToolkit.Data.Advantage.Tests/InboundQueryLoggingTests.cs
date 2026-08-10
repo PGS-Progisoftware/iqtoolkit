@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Linq.Expressions;
 using Xunit;
 using IQToolkit.Data.Advantage;
 
@@ -8,6 +9,13 @@ namespace IQToolkit.Data.Advantage.Tests
 {
     public class InboundQueryLoggingTests
     {
+        [Fact]
+        public void AdvantageExpressionWriter_Handles_NewExpression_WithoutConstructor()
+        {
+            var text = AdvantageExpressionWriter.WriteToString(Expression.New(typeof(DateTime)));
+            Assert.Contains("DateTime", text);
+        }
+
         [Fact]
         public void InboundQueryLogging_Writes_Expression_Before_Translation()
         {

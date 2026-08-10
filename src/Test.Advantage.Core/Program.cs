@@ -1,15 +1,7 @@
 ﻿// See https://aka.ms/new-console-template for more information
-using Gridify;
 using IQToolkit.Data.Advantage;
 using PCSLib.Data.DBF;
-using PCSLib.Data.DTO;
-using PCSLib.Data.Enums;
-using System;
 using System.ComponentModel.DataAnnotations;
-using System.Data;
-using System.Data.Common;
-using System.Linq;
-using System.Reflection;
 using System.Text;
 
 namespace Test.Advantage.Core
@@ -29,17 +21,39 @@ namespace Test.Advantage.Core
             IntPtr handle = LoadLibrary(path);
             Console.WriteLine($"LoadLibrary(ace64.dll): {handle}, Error: {System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
 
-            string connectionString = "Data Source=C:\\PGS\\LOCA RECEPTION\\Data\\Lyon;ServerType=remote;TableType=CDX;TrimTrailingSpaces=True;CharType=OEM";
+            string connectionString = "Data Source=C:\\PGS\\MAZAGAN;ServerType=remote;TableType=CDX;TrimTrailingSpaces=True;CharType=ANSI";
 
-            var provider = new AdvantageQueryProvider(connectionString);
+            var provider = new AdvantageQueryProvider(connectionString, tablePaths: new Dictionary<Type, string>
+			{
+				{typeof(LocClt), "C:\\PGS\\LOCA RECEPTION\\DATA\\LYON\\Locclt.dbf" }
+			});
             provider.Log = Console.Out;
-            provider.EnableQueryTiming = true;
+            //provider.EnableQueryTiming = true;
 			provider.EnableInboundQueryLogging = true;
 
-			var result = provider.GetTable<LocArt>()
-			.Where(a => a.CodeArticle.ToLower() == "1001")
-			.ToList();
+			var clts = provider.GetTable<LocClt>()
+				.Select(clt => new { contacts = clt.Contacts })
+				.Take(1)
+				.FirstOrDefault();
 
+			Console.WriteLine($"idTiers={clts}");
+			
+			//// var grille = provider.GetTable<LocCode>().Where(lc => lc.Type == PCSLib.Data.Constants.LocCodeTypes.Coef)
+			//// 	.Where(lc => Convert.ToInt32(lc.Code) <= 7)
+			//// 	.Take(1)
+			//// 	.FirstOrDefault();
+			//provider.DoConnected(() =>
+			//{
+			//	Console.WriteLine(provider.Connection.ServerVersion);
+			//});
+			//provider.DoConnected(() =>
+			//{
+			//	using var cmd = provider.Connection.CreateCommand();
+			//	cmd.CommandText = "EXECUTE PROCEDURE sp_mgGetInstallInfo()";
+			//	using var r = cmd.ExecuteReader();
+			//	while (r.Read())
+			//		Console.WriteLine($"{r.GetName(0)}={r.GetValue(0)}"); // adjust columns as needed
+			//});
         }
     }
 

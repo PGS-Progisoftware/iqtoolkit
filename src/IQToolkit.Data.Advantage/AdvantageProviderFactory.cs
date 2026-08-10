@@ -1,29 +1,53 @@
 using System;
 using System.Data.Common;
+using System.IO;
+using System.Reflection;
 
 namespace IQToolkit.Data.Advantage
 {
+    /// <summary>
+    /// Resolves <c>Advantage.Data.Provider.AdsFactory</c> at runtime so this assembly
+    /// does not take a compile-time / redistributable dependency on the licensed ADS DLL.
+    /// The client must ensure <c>Advantage.Data.Provider.dll</c> is loadable (app base, already loaded, etc.).
+    /// </summary>
     public class AdvantageProviderFactory
     {
-        private static readonly Lazy<DbProviderFactory> _factory = new Lazy<DbProviderFactory>(() =>
-        {
-			// Dynamically load the Advantage.Data.Provider factory
-			try
-			{
-				var assembly = System.Reflection.Assembly.LoadFrom("Advantage.Data.Provider.dll");
-				var type = assembly.GetType("Advantage.Data.Provider.AdsFactory");
-				return (DbProviderFactory)Activator.CreateInstance(type);
-			}
-			catch (Exception ex)
-			{
-				// Check ex.FusionLog or ex.LoaderExceptions
-				Console.WriteLine(ex.ToString());
-			}
+        private const string AssemblyFileName = "Advantage.Data.Provider.dll";
+        private const string FactoryTypeName = "Advantage.Data.Provider.AdsFactory";
+        private const string FactoryTypeAssemblyQualifiedName = FactoryTypeName + ", Advantage.Data.Provider";
 
-		var adsFactoryType = Type.GetType("Advantage.Data.Provider.AdsFactory, Advantage.Data.Provider", throwOnError: true);
-            return (DbProviderFactory)Activator.CreateInstance(adsFactoryType);
-        });
+        private static readonly Lazy<DbProviderFactory> _factory = new Lazy<DbProviderFactory>(CreateFactory);
 
         public static DbProviderFactory Instance => _factory.Value;
+
+        private static DbProviderFactory CreateFactory()
+        {
+            // Prefer standard probing / already-loaded assemblies (app base, deps, etc.).
+            var adsFactoryType = Type.GetType(FactoryTypeAssemblyQualifiedName, throwOnError: false);
+            if (adsFactoryType != null)
+                return CreateInstance(adsFactoryType);
+
+            // Explicit file next to the entry/app base (not CWD — that breaks when working directory ≠ bin).
+            var baseDirectory = AppContext.BaseDirectory;
+            if (!string.IsNullOrEmpty(baseDirectory))
+            {
+                var path = Path.Combine(baseDirectory, AssemblyFileName);
+                if (File.Exists(path))
+                {
+                    var assembly = Assembly.LoadFrom(path);
+                    adsFactoryType = assembly.GetType(FactoryTypeName, throwOnError: true);
+                    return CreateInstance(adsFactoryType);
+                }
+            }
+
+            throw new FileNotFoundException(
+                $"Could not load '{FactoryTypeName}'. Ensure '{AssemblyFileName}' is present in the application directory or otherwise loadable at runtime.",
+                Path.Combine(baseDirectory ?? string.Empty, AssemblyFileName));
+        }
+
+        private static DbProviderFactory CreateInstance(Type adsFactoryType)
+        {
+            return (DbProviderFactory)Activator.CreateInstance(adsFactoryType);
+        }
     }
 }

@@ -31,7 +31,7 @@ namespace IQToolkit.Data.Advantage.Tests
         [Fact]
         public void CompositeField_InProjection_WithToList()
         {
-            // Test: Project a composite field to a DTO
+            // Test: Project a composite field to a DTO — must keep date AND time
             var results = _provider.GetTable<TestEntity>()
                 .Where(t => t.CompositeDate != null)
                 .Select(t => new
@@ -44,6 +44,12 @@ namespace IQToolkit.Data.Advantage.Tests
 
             Assert.True(results.Count > 0);
             Assert.All(results, r => Assert.NotNull(r.CombinedDateTime));
+
+            var row1 = Assert.Single(results, r => r.Id == 1);
+            Assert.Equal(new DateTime(2023, 1, 1, 10, 0, 0), row1.CombinedDateTime);
+
+            var row2 = Assert.Single(results, r => r.Id == 2);
+            Assert.Equal(new DateTime(2023, 1, 1, 14, 30, 0), row2.CombinedDateTime);
         }
 
         [Fact(Skip = "Type mismatch between nullable and non-nullable when accessing .Value on composite")]

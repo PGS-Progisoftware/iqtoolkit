@@ -805,21 +805,9 @@ namespace IQToolkit.Data.Advantage
 				// Only rewrite composite fields when inside a projection
 				if (insideProjection && HasCompositeFieldAttribute(m.Member))
 				{
-					// Get the underlying date column
-					var attr = GetCompositeFieldAttribute(m.Member);
-					if (attr != null && m.Expression != null)
-					{
-						var entityType = m.Expression.Type;
-						var dateMember = (MemberInfo)entityType.GetProperty(attr.DateMember) ?? 
-						                 entityType.GetField(attr.DateMember);
-
-						if (dateMember != null)
-						{
-							// Rewrite to access the date column instead of the composite
-							// This ensures the projection SELECT uses DATEDEP, not DTDepartMateriel
-							return Expression.MakeMemberAccess(source, dateMember);
-						}
-					}
+					var expanded = ExpandCompositeProjection(m.Member, source ?? m.Expression);
+					if (expanded != null)
+						return expanded;
 				}
 
 				// Reconstruct if source changed
@@ -827,6 +815,37 @@ namespace IQToolkit.Data.Advantage
 					return Expression.MakeMemberAccess(source, m.Member);
 
 				return m;
+			}
+
+			// new Entity { Date=..., Time=... }.Composite → getter reconstitutes full DateTime client-side
+			private static Expression ExpandCompositeProjection(MemberInfo compositeMember, Expression entitySource)
+			{
+				if (entitySource == null)
+					return null;
+
+				var attr = GetCompositeFieldAttribute(compositeMember);
+				if (attr == null)
+					return null;
+
+				var entityType = entitySource.Type;
+				var dateMember = (MemberInfo)entityType.GetProperty(attr.DateMember) ??
+				                 entityType.GetField(attr.DateMember);
+				var timeMember = (MemberInfo)entityType.GetProperty(attr.TimeMember) ??
+				                 entityType.GetField(attr.TimeMember);
+
+				if (dateMember == null || timeMember == null)
+					return null;
+
+				var ctor = entityType.GetConstructor(Type.EmptyTypes);
+				if (ctor == null)
+					return null;
+
+				var minimalEntity = Expression.MemberInit(
+					Expression.New(ctor),
+					Expression.Bind(dateMember, Expression.MakeMemberAccess(entitySource, dateMember)),
+					Expression.Bind(timeMember, Expression.MakeMemberAccess(entitySource, timeMember)));
+
+				return Expression.MakeMemberAccess(minimalEntity, compositeMember);
 			}
 		}
 
