@@ -425,6 +425,27 @@ namespace IQToolkit.Data.Advantage
                 param);
         }
 
+        /// <summary>
+        /// Same as <see cref="BasicMapper.GetColumnType"/>: prefer [Column(DbType)]
+        /// (CHAR → ANSI) over CLR type (string → NVarChar). UpdatePartial previously
+        /// used the CLR type, so ACE bound Unicode parameters on ANSI CDX (ADS 5211).
+        /// Core is not patched; this path never goes through BasicMapper.
+        /// </summary>
+        private static QueryType GetMappedColumnType(
+            MappingEntity entityMeta,
+            BasicMapping mapping,
+            QueryLanguage language,
+            MemberInfo member)
+        {
+            string dbType = mapping.GetColumnDbType(entityMeta, member);
+            if (!string.IsNullOrEmpty(dbType))
+            {
+                return language.TypeSystem.Parse(dbType);
+            }
+
+            return language.TypeSystem.GetColumnType(TypeHelper.GetMemberType(member));
+        }
+
         private static Expression BuildWhereFromKey(
             MappingEntity entityMeta,
             BasicMapping mapping,
@@ -434,7 +455,7 @@ namespace IQToolkit.Data.Advantage
             object keyValue)
         {
             var memberType = TypeHelper.GetMemberType(pkMember);
-            var columnType = language.TypeSystem.GetColumnType(memberType);
+            var columnType = GetMappedColumnType(entityMeta, mapping, language, pkMember);
             var columnName = mapping.GetColumnName(entityMeta, pkMember);
 
             var columnExpr = new ColumnExpression(
@@ -481,7 +502,7 @@ namespace IQToolkit.Data.Advantage
             {
                 // Column on table side
                 var memberType = TypeHelper.GetMemberType(pkMember);
-                var columnType = language.TypeSystem.GetColumnType(memberType);
+                var columnType = GetMappedColumnType(entityMeta, mapping, language, pkMember);
                 var columnName = mapping.GetColumnName(entityMeta, pkMember);
 
                 var columnExpr = new ColumnExpression(
@@ -614,7 +635,7 @@ namespace IQToolkit.Data.Advantage
             }
 
             var memberType = TypeHelper.GetMemberType(pkMember);
-            var columnType = language.TypeSystem.GetColumnType(memberType);
+            var columnType = GetMappedColumnType(entityMeta, mapping, language, pkMember);
             var columnName = mapping.GetColumnName(entityMeta, pkMember);
 
             var columnExpr = new ColumnExpression(
@@ -653,7 +674,7 @@ namespace IQToolkit.Data.Advantage
             }
 
             var memberType = TypeHelper.GetMemberType(mapped);
-            var columnType = language.TypeSystem.GetColumnType(memberType);
+            var columnType = GetMappedColumnType(entityMeta, mapping, language, mapped);
             var columnName = mapping.GetColumnName(entityMeta, mapped);
 
             return new ColumnExpression(memberType, columnType, tex.Alias, columnName);
@@ -811,7 +832,7 @@ namespace IQToolkit.Data.Advantage
 
                     // DATE component
                     var dateClrType = TypeHelper.GetMemberType(composite.DateMember);
-                    var dateQt = language.TypeSystem.GetColumnType(dateClrType);
+                    var dateQt = GetMappedColumnType(entityMeta, mapping, language, composite.DateMember);
                     var dateName = mapping.GetColumnName(entityMeta, composite.DateMember);
 
                     var dateCol = new ColumnExpression(
@@ -825,7 +846,7 @@ namespace IQToolkit.Data.Advantage
 
                     // TIME component
                     var timeClrType = TypeHelper.GetMemberType(composite.TimeMember);
-                    var timeQt = language.TypeSystem.GetColumnType(timeClrType);
+                    var timeQt = GetMappedColumnType(entityMeta, mapping, language, composite.TimeMember);
                     var timeName = mapping.GetColumnName(entityMeta, composite.TimeMember);
 
                     var timeCol = new ColumnExpression(
@@ -848,7 +869,7 @@ namespace IQToolkit.Data.Advantage
                     var formattedValue = FormatCharDateTime(raw, charDt.Format);
 
                     var charClrType = typeof(string);
-                    var charQt = language.TypeSystem.GetColumnType(charClrType);
+                    var charQt = GetMappedColumnType(entityMeta, mapping, language, charDt.CharMember);
                     var charName = mapping.GetColumnName(entityMeta, charDt.CharMember);
 
                     var charCol = new ColumnExpression(charClrType, charQt, tex.Alias, charName);
@@ -866,7 +887,7 @@ namespace IQToolkit.Data.Advantage
                     continue;
 
                 var memberType = TypeHelper.GetMemberType(member);
-                var columnType = language.TypeSystem.GetColumnType(memberType);
+                var columnType = GetMappedColumnType(entityMeta, mapping, language, member);
                 var columnName = mapping.GetColumnName(entityMeta, member);
 
                 var columnExpr = new ColumnExpression(
@@ -960,7 +981,7 @@ namespace IQToolkit.Data.Advantage
 
                     // DATE component
                     var dateClrType = TypeHelper.GetMemberType(composite.DateMember);
-                    var dateQt = language.TypeSystem.GetColumnType(dateClrType);
+                    var dateQt = GetMappedColumnType(entityMeta, mapping, language, composite.DateMember);
                     var dateName = mapping.GetColumnName(entityMeta, composite.DateMember);
 
                     var dateCol = new ColumnExpression(
@@ -974,7 +995,7 @@ namespace IQToolkit.Data.Advantage
 
                     // TIME component
                     var timeClrType = TypeHelper.GetMemberType(composite.TimeMember);
-                    var timeQt = language.TypeSystem.GetColumnType(timeClrType);
+                    var timeQt = GetMappedColumnType(entityMeta, mapping, language, composite.TimeMember);
                     var timeName = mapping.GetColumnName(entityMeta, composite.TimeMember);
 
                     var timeCol = new ColumnExpression(
@@ -997,7 +1018,7 @@ namespace IQToolkit.Data.Advantage
                     var formattedValue = FormatCharDateTime(rawValue, charDtFromSet.Format);
 
                     var charClrType = typeof(string);
-                    var charQt = language.TypeSystem.GetColumnType(charClrType);
+                    var charQt = GetMappedColumnType(entityMeta, mapping, language, charDtFromSet.CharMember);
                     var charName = mapping.GetColumnName(entityMeta, charDtFromSet.CharMember);
 
                     var charCol = new ColumnExpression(charClrType, charQt, tex.Alias, charName);
@@ -1013,7 +1034,7 @@ namespace IQToolkit.Data.Advantage
                 }
 
                 var memberType = TypeHelper.GetMemberType(targetMember);
-                var columnType = language.TypeSystem.GetColumnType(memberType);
+                var columnType = GetMappedColumnType(entityMeta, mapping, language, targetMember);
                 var columnName = mapping.GetColumnName(entityMeta, targetMember);
 
                 var columnExpr = new ColumnExpression(

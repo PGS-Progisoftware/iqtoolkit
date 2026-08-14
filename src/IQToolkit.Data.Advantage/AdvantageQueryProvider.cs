@@ -1,3 +1,4 @@
+using IQToolkit.Data;
 using IQToolkit.Data.Common;
 using System;
 using System.Collections.Generic;
@@ -231,10 +232,18 @@ namespace IQToolkit.Data.Advantage
 				return value;
 			}
 
+			/// <summary>
+			/// Bind using the mapped SQL type so CHAR/VARCHAR/TEXT become ANSI
+			/// (<see cref="DbType.AnsiStringFixedLength"/> / <see cref="DbType.AnsiString"/>).
+			/// Leaving DbType unset sends a .NET string as Unicode → AdsPrepareSQLW.
+			/// On local ALS (no ICU) that is ADS 5211; the 1500 retry does not catch it.
+			/// Core is not patched: SqlClient/SQLite already set provider types here.
+			/// </summary>
 			protected override void AddParameter(DbCommand command, QueryParameter parameter, object value)
 			{
 				DbParameter p = command.CreateParameter();
 				p.ParameterName = parameter.Name;
+				ApplyQueryType(p, parameter);
 				p.Value = CoerceParameterValue(parameter, value);
 				command.Parameters.Add(p);
 			}
@@ -256,9 +265,41 @@ namespace IQToolkit.Data.Advantage
 						if (p.Direction == System.Data.ParameterDirection.Input
 						 || p.Direction == System.Data.ParameterDirection.InputOutput)
 						{
+							ApplyQueryType(p, query.Parameters[i]);
 							p.Value = CoerceParameterValue(query.Parameters[i], paramValues[i]);
 						}
 					}
+				}
+			}
+
+			private void ApplyQueryType(DbParameter p, QueryParameter parameter)
+			{
+				QueryType qt = parameter.QueryType;
+				if (qt == null)
+				{
+					qt = _provider.Language.TypeSystem.GetColumnType(parameter.Type);
+				}
+
+				if (!(qt is SqlQueryType sqlType))
+				{
+					return;
+				}
+
+				p.DbType = sqlType.SqlType.ToDbType();
+
+				if (qt.Length > 0 && qt.Length != int.MaxValue)
+				{
+					p.Size = qt.Length;
+				}
+
+				if (qt.Precision != 0)
+				{
+					p.Precision = (byte)qt.Precision;
+				}
+
+				if (qt.Scale != 0)
+				{
+					p.Scale = (byte)qt.Scale;
 				}
 			}
 
@@ -279,16 +320,16 @@ namespace IQToolkit.Data.Advantage
 
 					if (v == null || v == DBNull.Value)
 					{
-						_provider.Log.WriteLine("-- {0} = NULL", p.ParameterName);
+						_provider.Log.WriteLine("-- {0} ({1}) = NULL", p.ParameterName, p.DbType);
 					}
 					else if (v is string s)
 					{
 						// Make whitespace visible (critical for space-backed enums).
-						_provider.Log.WriteLine("-- {0} = ['{1}']", p.ParameterName, s);
+						_provider.Log.WriteLine("-- {0} ({1}) = ['{2}']", p.ParameterName, p.DbType, s);
 					}
 					else
 					{
-						_provider.Log.WriteLine("-- {0} = [{1}]", p.ParameterName, v);
+						_provider.Log.WriteLine("-- {0} ({1}) = [{2}]", p.ParameterName, p.DbType, v);
 					}
 				}
 
