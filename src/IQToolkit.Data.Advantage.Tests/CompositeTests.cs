@@ -245,5 +245,86 @@ namespace IQToolkit.Data.Advantage.Tests
             Assert.Contains(list, t => t.Id == 3);
             Assert.DoesNotContain(list, t => t.Id == 4);
         }
+
+        [Fact]
+        public void UpdatePartial_PkAndCompositeDate_MatchingStamp_Updates()
+        {
+            var table = GetProvider().GetTable<TestEntity>("TestTable");
+            var expected = new DateTime(2023, 1, 1, 10, 0, 0);
+
+            var affected = table.UpdatePartial(
+                t => t.Id == 1 && t.CompositeDate == expected,
+                t => new { Name = "Updated" });
+
+            Assert.Equal(1, affected);
+            Assert.Equal("Updated", table.Where(t => t.Id == 1).Single().Name.Trim());
+        }
+
+        [Fact]
+        public void UpdatePartial_PkAndCompositeDate_StaleStamp_DoesNotUpdate()
+        {
+            var table = GetProvider().GetTable<TestEntity>("TestTable");
+            var stale = new DateTime(2023, 1, 1, 14, 30, 0);
+
+            var affected = table.UpdatePartial(
+                t => t.Id == 1 && t.CompositeDate == stale,
+                t => new { Name = "Nope" });
+
+            Assert.Equal(0, affected);
+            Assert.Equal("Alpha", table.Where(t => t.Id == 1).Single().Name.Trim());
+        }
+
+        [Fact]
+        public void UpdatePartial_PkAndCompositeDate_UpdatesStampInSet()
+        {
+            var table = GetProvider().GetTable<TestEntity>("TestTable");
+            var expected = new DateTime(2023, 1, 1, 10, 0, 0);
+            var next = new DateTime(2024, 6, 1, 11, 30, 0);
+
+            var affected = table.UpdatePartial(
+                t => t.Id == 1 && t.CompositeDate == expected,
+                t => new { CompositeDate = (DateTime?)next, Name = "Stamped" });
+
+            Assert.Equal(1, affected);
+
+            var updated = table.Where(t => t.Id == 1).Single();
+            Assert.Equal(next, updated.CompositeDate);
+            Assert.Equal("Stamped", updated.Name.Trim());
+
+            var staleRetry = table.UpdatePartial(
+                t => t.Id == 1 && t.CompositeDate == expected,
+                t => new { Name = "Lost" });
+
+            Assert.Equal(0, staleRetry);
+            Assert.Equal("Stamped", table.Where(t => t.Id == 1).Single().Name.Trim());
+        }
+
+        [Fact]
+        public void UpdatePartial_PkAndBackingColumns_Matching_Updates()
+        {
+            var table = GetProvider().GetTable<TestEntity>("TestTable");
+            var date = new DateTime(2023, 1, 1);
+
+            var affected = table.UpdatePartial(
+                t => t.Id == 1 && t.DateCol == date && t.TimeCol == "10:00",
+                t => new { Name = "ByColumns" });
+
+            Assert.Equal(1, affected);
+            Assert.Equal("ByColumns", table.Where(t => t.Id == 1).Single().Name.Trim());
+        }
+
+        [Fact]
+        public void UpdatePartial_WithoutPk_Throws()
+        {
+            var table = GetProvider().GetTable<TestEntity>("TestTable");
+            var expected = new DateTime(2023, 1, 1, 10, 0, 0);
+
+            var ex = Assert.Throws<NotSupportedException>(() =>
+                table.UpdatePartial(
+                    t => t.CompositeDate == expected,
+                    t => new { Name = "Nope" }));
+
+            Assert.Contains("primary key", ex.Message);
+        }
     }
 }

@@ -105,11 +105,13 @@ namespace IQToolkit.Data.Advantage
         /// Partial update without loading the entity first.
         /// WHERE is supplied as a predicate, and SET comes from an anonymous object whose
         /// property names match mapped column members and whose values are constant/closure values.
-        /// 
-        /// Example:
+        ///
+        /// The predicate must include a single-column primary-key equality. Additional AND
+        /// conjuncts (mapped columns, CompositeField, CharDateTimeField) are appended to the
+        /// UPDATE WHERE — e.g. optimistic concurrency:
         /// table.UpdatePartial(
-        ///     x => x.CodeArticle == "1001",
-        ///     x => new { Status = LocStatus.Location }
+        ///     x => x.IdTiers == id &amp;&amp; x.DTModification == expected,
+        ///     x => new { DTModification = next }
         /// );
         /// </summary>
         public static int UpdatePartial<T>(
@@ -138,7 +140,7 @@ namespace IQToolkit.Data.Advantage
             var tableAlias = new TableAlias();
             var tex = new TableExpression(tableAlias, entityMeta, tableName);
 
-            // WHERE must be a simple equality on the primary key (single-column PK in v1)
+            // WHERE: required PK equality, plus optional AND conjuncts (columns / composite / char-datetime)
             var whereExpr = BuildWhereFromPredicate(entityMeta, basicMapping, provider.Language, tex, where);
 
             var assignments = BuildAssignmentsFromSet(entityMeta, basicMapping, provider.Language, tex, set);
@@ -518,23 +520,73 @@ namespace IQToolkit.Data.Advantage
             }
 
             var pkMember = pkMembers[0];
+            var param = where.Parameters[0];
 
-            Expression body = where.Body;
-            body = StripConvert(body);
+            var conjuncts = StripConvert(where.Body).Split(ExpressionType.AndAlso, ExpressionType.And);
 
+            Expression pkWhere = null;
+            var extraConjuncts = new List<Expression>();
+
+            foreach (var conjunct in conjuncts)
+            {
+                if (TryBuildPrimaryKeyEquality(conjunct, param, pkMember, mapping, language, tex, entityMeta, out var pkEquality))
+                {
+                    if (pkWhere != null)
+                    {
+                        throw new NotSupportedException("UpdatePartial where-predicate must contain exactly one primary-key equality.");
+                    }
+
+                    pkWhere = pkEquality;
+                }
+                else
+                {
+                    extraConjuncts.Add(conjunct);
+                }
+            }
+
+            if (pkWhere == null)
+            {
+                throw new NotSupportedException("UpdatePartial where-predicate must include a simple equality on the primary key, e.g. x => x.Id == someKey && extra.");
+            }
+
+            if (extraConjuncts.Count == 0)
+            {
+                return pkWhere;
+            }
+
+            var extra = extraConjuncts.Join(ExpressionType.AndAlso);
+            extra = new ConstantFolder(param).Fold(extra);
+            extra = AdvantageCompositeFieldRewriter.Rewrite(extra);
+            extra = AdvantageCharDateTimeFieldRewriter.Rewrite(extra);
+            extra = new PredicateMemberToColumnRewriter(entityMeta, mapping, language, tex, param).Rewrite(extra);
+
+            return pkWhere.And(extra);
+        }
+
+        private static bool TryBuildPrimaryKeyEquality(
+            Expression conjunct,
+            ParameterExpression param,
+            MemberInfo pkMember,
+            BasicMapping mapping,
+            QueryLanguage language,
+            TableExpression tex,
+            MappingEntity entityMeta,
+            out Expression pkWhere)
+        {
+            pkWhere = null;
+
+            var body = StripConvert(conjunct);
             var be = body as BinaryExpression;
             if (be == null || be.NodeType != ExpressionType.Equal)
             {
-                throw new NotSupportedException("UpdatePartial where-predicate must be a simple equality on the primary key, e.g. x => x.Id == someKey.");
+                return false;
             }
-
-            var param = where.Parameters[0];
-
-            MemberExpression memberExpr = null;
-            Expression valueExpr = null;
 
             var left = StripConvert(be.Left);
             var right = StripConvert(be.Right);
+
+            MemberExpression memberExpr = null;
+            Expression valueExpr = null;
 
             if (left is MemberExpression lm && IsParameterMember(lm, param))
             {
@@ -548,12 +600,17 @@ namespace IQToolkit.Data.Advantage
             }
             else
             {
-                throw new NotSupportedException("UpdatePartial where-predicate must compare the primary key member to a constant/closure value.");
+                return false;
             }
 
             if (!Equals(memberExpr.Member, pkMember))
             {
-                throw new NotSupportedException("UpdatePartial where-predicate must target the primary key member.");
+                return false;
+            }
+
+            if (ContainsParameter(valueExpr, param))
+            {
+                return false;
             }
 
             var memberType = TypeHelper.GetMemberType(pkMember);
@@ -568,8 +625,164 @@ namespace IQToolkit.Data.Advantage
 
             object valueObj = Evaluate(valueExpr);
             var constExpr = Expression.Constant(valueObj, memberType);
+            pkWhere = columnExpr.Equal(constExpr);
+            return true;
+        }
 
-            return columnExpr.Equal(constExpr);
+        private static Expression MakeColumnExpression(
+            MappingEntity entityMeta,
+            BasicMapping mapping,
+            QueryLanguage language,
+            TableExpression tex,
+            MemberInfo member)
+        {
+            var mapped = mapping.GetMappedMembers(entityMeta)
+                .FirstOrDefault(m => string.Equals(m.Name, member.Name, StringComparison.Ordinal));
+
+            if (mapped == null)
+            {
+                throw new NotSupportedException(
+                    $"No mapped member named '{member.Name}' found on entity '{entityMeta.StaticType.Name}'.");
+            }
+
+            if (!mapping.IsColumn(entityMeta, mapped))
+            {
+                throw new NotSupportedException(
+                    $"UpdatePartial extra where-predicate member '{member.Name}' is not a database column. " +
+                    "CompositeField and CharDateTimeField comparisons are rewritten to their backing columns first.");
+            }
+
+            var memberType = TypeHelper.GetMemberType(mapped);
+            var columnType = language.TypeSystem.GetColumnType(memberType);
+            var columnName = mapping.GetColumnName(entityMeta, mapped);
+
+            return new ColumnExpression(memberType, columnType, tex.Alias, columnName);
+        }
+
+        private sealed class ConstantFolder : ExpressionVisitor
+        {
+            private readonly ParameterExpression _parameter;
+
+            public ConstantFolder(ParameterExpression parameter)
+            {
+                _parameter = parameter;
+            }
+
+            public Expression Fold(Expression expression)
+            {
+                return this.Visit(expression);
+            }
+
+            protected override Expression VisitBinary(BinaryExpression b)
+            {
+                var left = this.Visit(b.Left);
+                var right = this.Visit(b.Right);
+                if (left == b.Left && right == b.Right)
+                {
+                    return b;
+                }
+
+                // Align nullable/non-nullable operands (DateTime? == DateTime) without the
+                // original op_Equality method, which no longer matches the folded constant.
+                return left.Binary(b.NodeType, right);
+            }
+
+            protected override Expression Visit(Expression exp)
+            {
+                if (exp == null)
+                {
+                    return null;
+                }
+
+                if (exp.NodeType == ExpressionType.Constant || exp.NodeType == ExpressionType.Parameter)
+                {
+                    return exp;
+                }
+
+                if (!ContainsParameter(exp, _parameter))
+                {
+                    try
+                    {
+                        object value = Evaluate(exp);
+                        if (value == null)
+                        {
+                            return Expression.Constant(null, exp.Type);
+                        }
+
+                        // Use the runtime type so DateTime? boxes as DateTime for the composite/char rewriters.
+                        return Expression.Constant(value);
+                    }
+                    catch
+                    {
+                        return base.Visit(exp);
+                    }
+                }
+
+                return base.Visit(exp);
+            }
+        }
+
+        private sealed class PredicateMemberToColumnRewriter : ExpressionVisitor
+        {
+            private readonly MappingEntity _entityMeta;
+            private readonly BasicMapping _mapping;
+            private readonly QueryLanguage _language;
+            private readonly TableExpression _tex;
+            private readonly ParameterExpression _parameter;
+
+            public PredicateMemberToColumnRewriter(
+                MappingEntity entityMeta,
+                BasicMapping mapping,
+                QueryLanguage language,
+                TableExpression tex,
+                ParameterExpression parameter)
+            {
+                _entityMeta = entityMeta;
+                _mapping = mapping;
+                _language = language;
+                _tex = tex;
+                _parameter = parameter;
+            }
+
+            public Expression Rewrite(Expression expression)
+            {
+                return this.Visit(expression);
+            }
+
+            protected override Expression VisitBinary(BinaryExpression b)
+            {
+                var left = this.Visit(b.Left);
+                var right = this.Visit(b.Right);
+                if (left == b.Left && right == b.Right)
+                {
+                    return b;
+                }
+
+                return left.Binary(b.NodeType, right);
+            }
+
+            protected override Expression VisitMemberAccess(MemberExpression m)
+            {
+                var source = StripConvert(m.Expression);
+                if (source == _parameter)
+                {
+                    return MakeColumnExpression(_entityMeta, _mapping, _language, _tex, m.Member);
+                }
+
+                return base.VisitMemberAccess(m);
+            }
+
+            protected override Expression VisitParameter(ParameterExpression p)
+            {
+                if (p == _parameter)
+                {
+                    throw new NotSupportedException(
+                        "UpdatePartial extra where-predicate still references the entity after translation. " +
+                        "Use comparisons on mapped columns, CompositeField, or CharDateTimeField.");
+                }
+
+                return p;
+            }
         }
 
         private static List<ColumnAssignment> BuildAssignments<T>(

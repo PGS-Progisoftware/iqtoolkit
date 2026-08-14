@@ -108,6 +108,45 @@ namespace IQToolkit.Data.Advantage.Tests
         }
 
         [Fact]
+        public void UpdatePartial_PkOnly_StillWorks()
+        {
+            var customers = GetProvider().GetTable<Customer>("Customers");
+
+            var affected = customers.UpdatePartial(
+                c => c.CustomerId == 1,
+                c => new { City = "Madrid" });
+
+            Assert.Equal(1, affected);
+            Assert.Equal("Madrid", customers.GetById(1).City.Trim());
+        }
+
+        [Fact]
+        public void UpdatePartial_PkAndExtraColumn_Matching_Updates()
+        {
+            var customers = GetProvider().GetTable<Customer>("Customers");
+
+            var affected = customers.UpdatePartial(
+                c => c.CustomerId == 1 && c.City == "London",
+                c => new { City = "Oslo" });
+
+            Assert.Equal(1, affected);
+            Assert.Equal("Oslo", customers.GetById(1).City.Trim());
+        }
+
+        [Fact]
+        public void UpdatePartial_PkAndExtraColumn_Mismatch_DoesNotUpdate()
+        {
+            var customers = GetProvider().GetTable<Customer>("Customers");
+
+            var affected = customers.UpdatePartial(
+                c => c.CustomerId == 1 && c.City == "Paris",
+                c => new { City = "Oslo" });
+
+            Assert.Equal(0, affected);
+            Assert.Equal("London", customers.GetById(1).City.Trim());
+        }
+
+        [Fact]
         public void GetById()
         {
             var provider = GetProvider();

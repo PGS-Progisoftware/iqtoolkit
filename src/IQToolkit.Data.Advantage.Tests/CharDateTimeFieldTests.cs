@@ -271,5 +271,51 @@ namespace IQToolkit.Data.Advantage.Tests
             var updated = table.Where(e => e.Id == 2).Single();
             Assert.Null(updated.DTMAJ);
         }
+
+        [Fact]
+        public void UpdatePartial_PkAndDtmaj_MatchingStamp_Updates()
+        {
+            var table = GetProvider().GetTable<CharDateTimeEntity>();
+            var expected = new DateTime(2023, 6, 15, 10, 30, 0);
+
+            var affected = table.UpdatePartial(
+                e => e.Id == 1 && e.DTMAJ == expected,
+                e => new { Label = "Touched" });
+
+            Assert.Equal(1, affected);
+            Assert.Equal("Touched", table.Where(e => e.Id == 1).Single().Label.Trim());
+        }
+
+        [Fact]
+        public void UpdatePartial_PkAndDtmaj_StaleStamp_DoesNotUpdate()
+        {
+            var table = GetProvider().GetTable<CharDateTimeEntity>();
+            var stale = new DateTime(2023, 6, 15, 14, 45, 0);
+
+            var affected = table.UpdatePartial(
+                e => e.Id == 1 && e.DTMAJ == stale,
+                e => new { Label = "Nope" });
+
+            Assert.Equal(0, affected);
+            Assert.Equal("Alpha", table.Where(e => e.Id == 1).Single().Label.Trim());
+        }
+
+        [Fact]
+        public void UpdatePartial_PkAndDtmaj_UpdatesStampInSet()
+        {
+            var table = GetProvider().GetTable<CharDateTimeEntity>();
+            var expected = new DateTime(2023, 6, 15, 10, 30, 0);
+            var next = new DateTime(2024, 1, 1, 8, 0, 0);
+
+            var affected = table.UpdatePartial(
+                e => e.Id == 1 && e.DTMAJ == expected,
+                e => new { DTMAJ = (DateTime?)next });
+
+            Assert.Equal(1, affected);
+
+            var updated = table.Where(e => e.Id == 1).Single();
+            Assert.Equal(next, updated.DTMAJ);
+            Assert.Equal("202401010800", updated.DTMAJ_RAW?.Trim());
+        }
     }
 }

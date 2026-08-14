@@ -101,6 +101,12 @@ namespace IQToolkit.Data.Advantage
 		{
 			value = null;
 
+			while (expression is UnaryExpression uex &&
+			       (uex.NodeType == ExpressionType.Convert || uex.NodeType == ExpressionType.ConvertChecked))
+			{
+				expression = uex.Operand;
+			}
+
 			if (expression is ConstantExpression constExpr)
 			{
 				value = constExpr.Value;
