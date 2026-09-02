@@ -202,5 +202,148 @@ namespace IQToolkit.Data.Advantage.Tests
             Assert.Equal("Child1_P2", result.Data.Trim());
             Assert.Equal("Parent2", result.ParentName.Trim());
         }
+
+        [Fact]
+        public void Association_BlankStringKey_JoinOnContainsNonEmptyPredicate()
+        {
+            var provider = GetProvider();
+            var parents = provider.GetTable<AssocParent>("AssocParents");
+
+            var query = from p in parents
+                        where p.ParentId == 1
+                        select new { p.ParentId, p.LibLang, p.Langue };
+
+            var sql = provider.GetQueryText(query.Expression);
+
+            Assert.Contains("LEFT OUTER JOIN", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("LibLang", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Code", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Type", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("IS NOT NULL", sql, StringComparison.OrdinalIgnoreCase);
+            // ADS 2123: empty string must be a SQL literal, not :pN.
+            Assert.Contains("TRIM(t0.[LibLang]) <> ''", sql);
+        }
+
+        [Fact]
+        public void Association_BlankStringKey_SingleOrDefault_DoesNotMultiplyOuterRow()
+        {
+            var provider = GetProvider();
+            var parents = provider.GetTable<AssocParent>("AssocParents");
+
+            var result = (from p in parents
+                          where p.ParentId == 2
+                          select new { p.ParentId, p.Langue, p.DeviseCode })
+                .SingleOrDefault();
+
+            Assert.NotNull(result);
+            Assert.Equal(2, result.ParentId);
+            Assert.Null(result.Langue);
+            Assert.Null(result.DeviseCode);
+        }
+
+        [Fact]
+        public void Association_BlankStringKey_ToList_OuterCardinalityStaysOne()
+        {
+            var provider = GetProvider();
+            var parents = provider.GetTable<AssocParent>("AssocParents");
+
+            var list = (from p in parents
+                        where p.ParentId == 2
+                        select new { p.ParentId, p.Langue })
+                .ToList();
+
+            Assert.Single(list);
+            Assert.Null(list[0].Langue);
+        }
+
+        [Fact]
+        public void Association_FilledStringKey_StillJoinsMatchingRow()
+        {
+            var provider = GetProvider();
+            var parents = provider.GetTable<AssocParent>("AssocParents");
+
+            var result = (from p in parents
+                          where p.ParentId == 1
+                          select new { p.ParentId, p.Langue, p.DeviseCode })
+                .Single();
+
+            Assert.NotNull(result.Langue);
+            Assert.Equal("France", result.Langue.Libelle.Trim());
+            Assert.Equal("PAYS", result.Langue.Type.Trim());
+            Assert.NotNull(result.DeviseCode);
+            Assert.Equal("Euro", result.DeviseCode.Libelle.Trim());
+            Assert.Equal("DEVISE", result.DeviseCode.Type.Trim());
+        }
+
+        [Fact]
+        public void Association_PartialBlankStringKey_FilledJoinWorks_BlankIsNull()
+        {
+            var provider = GetProvider();
+            var parents = provider.GetTable<AssocParent>("AssocParents");
+
+            var result = (from p in parents
+                          where p.ParentId == 3
+                          select new { p.ParentId, p.Langue, p.DeviseCode })
+                .Single();
+
+            Assert.NotNull(result.Langue);
+            Assert.Equal("France", result.Langue.Libelle.Trim());
+            Assert.Null(result.DeviseCode);
+        }
+
+        [Fact]
+        public void Association_Collection_ClientJoin_DoesNotGuardOuterParameter()
+        {
+            var provider = GetProvider();
+            var parents = provider.GetTable<AssocParent>("AssocParents");
+
+            var singletonSql = provider.GetQueryText(
+                (from p in parents
+                 where p.ParentId == 1
+                 select new { p.ParentId, p.LibLang, p.Langue }).Expression);
+
+            Assert.Contains("TRIM(t0.[LibLang]) <> ''", singletonSql);
+            Assert.DoesNotContain("TRIM(:", singletonSql, StringComparison.OrdinalIgnoreCase);
+
+            var collectionSql = provider.GetQueryText(
+                (from p in parents
+                 where p.ParentId == 1
+                 select new { p.ParentId, p.Details }).Expression);
+
+            Assert.Contains("LEFT OUTER JOIN", collectionSql, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("NumLoc", collectionSql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("TRIM(", collectionSql, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Association_Collection_BlankSingletonFk_StillLoadsDetails()
+        {
+            var provider = GetProvider();
+            var parents = provider.GetTable<AssocParent>("AssocParents");
+
+            var result = (from p in parents
+                          where p.ParentId == 2
+                          select new { p.ParentId, Details = p.Details })
+                .Single();
+
+            Assert.NotNull(result.Details);
+            Assert.Single(result.Details);
+            Assert.Equal("Line3", result.Details[0].Label.Trim());
+        }
+
+        [Fact]
+        public void Association_Collection_FilledKey_LoadsDetails()
+        {
+            var provider = GetProvider();
+            var parents = provider.GetTable<AssocParent>("AssocParents");
+
+            var result = (from p in parents
+                          where p.ParentId == 1
+                          select new { p.ParentId, Details = p.Details })
+                .Single();
+
+            Assert.NotNull(result.Details);
+            Assert.Equal(2, result.Details.Count);
+        }
     }
 }

@@ -123,6 +123,66 @@ namespace IQToolkit.Data.Advantage.Tests
     }
 
     /// <summary>
+    /// Parent with CHAR FK columns that may be blank (ADS pads spaces).
+    /// Mirrors LocGen.LIBLANG / DEVISE → LocCode with AssociationFilter on TYPE.
+    /// </summary>
+    [Table(Name = "AssocParents")]
+    public class AssocParent
+    {
+        [Column(IsPrimaryKey = true)]
+        public int ParentId { get; set; }
+
+        [Column(DbType = "Char(10)")]
+        public string LibLang { get; set; }
+
+        [Column(DbType = "Char(10)")]
+        public string Devise { get; set; }
+
+        [Column(DbType = "Char(20)")]
+        public string NumLoc { get; set; }
+
+        [Association(KeyMembers = nameof(LibLang), RelatedKeyMembers = nameof(AssocCode.Code))]
+        [AssociationFilter(nameof(AssocCode.Type), "PAYS")]
+        public AssocCode Langue { get; set; }
+
+        [Association(KeyMembers = nameof(Devise), RelatedKeyMembers = nameof(AssocCode.Code))]
+        [AssociationFilter(nameof(AssocCode.Type), "DEVISE")]
+        public AssocCode DeviseCode { get; set; }
+
+        [Association(KeyMembers = nameof(NumLoc), RelatedKeyMembers = nameof(AssocDetail.NumLoc))]
+        public IList<AssocDetail> Details { get; set; }
+    }
+
+    [Table(Name = "AssocDetails")]
+    public class AssocDetail
+    {
+        [Column(IsPrimaryKey = true)]
+        public int DetailId { get; set; }
+
+        [Column(DbType = "Char(20)")]
+        public string NumLoc { get; set; }
+
+        [Column(DbType = "Char(30)")]
+        public string Label { get; set; }
+    }
+
+    [Table(Name = "AssocCodes")]
+    public class AssocCode
+    {
+        [Column(IsPrimaryKey = true)]
+        public int Id { get; set; }
+
+        [Column(DbType = "Char(10)")]
+        public string Code { get; set; }
+
+        [Column(DbType = "Char(10)")]
+        public string Type { get; set; }
+
+        [Column(DbType = "Char(30)")]
+        public string Libelle { get; set; }
+    }
+
+    /// <summary>
     /// Entity for CharDateTimeField tests.
     /// DTMAJ is stored as CHAR(12) in "yyyyMMddHHmm" format.
     /// </summary>

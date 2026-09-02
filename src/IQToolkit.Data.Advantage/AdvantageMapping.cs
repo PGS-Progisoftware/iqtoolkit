@@ -68,6 +68,8 @@ namespace IQToolkit.Data.Advantage
 		private class AdvantageMapper : AdvancedMapper
 		{
 			private readonly AdvantageMapping _mapping;
+			private static readonly MethodInfo StringTrimMethod =
+				typeof(string).GetMethod(nameof(string.Trim), Type.EmptyTypes);
 
 			public AdvantageMapper(AdvantageMapping mapping, QueryTranslator translator)
 				: base(mapping, translator)
@@ -428,7 +430,7 @@ namespace IQToolkit.Data.Advantage
 
                     return null;
                 }
-            }
+			}
 
 			public override Expression GetMemberExpression(Expression root, MappingEntity entity, MemberInfo member)
 			{
@@ -445,11 +447,25 @@ namespace IQToolkit.Data.Advantage
 					Expression where = null;
 					for (int i = 0, n = associatedMembers.Count; i < n; i++)
 					{
+						var parentKey = this.GetMemberExpression(root, entity, declaredTypeMembers[i]);
 						Expression equal =
 							this.GetMemberExpression(projection.Projector, relatedEntity, associatedMembers[i]).Equal(
-								this.GetMemberExpression(root, entity, declaredTypeMembers[i])
+								parentKey
 							);
 						where = (where != null) ? where.And(equal) : equal;
+
+						// ADS CHAR(n) pads with spaces, so a blank parent FK equals blank related keys
+						// and a 1:1 LEFT JOIN multiplies the outer row (SingleOrDefault throws).
+						// Guard only singleton associations whose parent key is still a column on the
+						// outer table. Collections are client-joined: OuterParameterizer rewrites the
+						// outer key to :n0, and TRIM(:n0) <> :p0 both filters valid rows and hits ADS 2123.
+						// Not patched in BasicMapper/core — stay upstream-compatible; Advantage only.
+						if (_mapping.IsSingletonRelationship(entity, member) && parentKey is ColumnExpression)
+						{
+							var nonEmpty = BuildStringKeyNonEmptyPredicate(parentKey);
+							if (nonEmpty != null)
+								where = where.And(nonEmpty);
+						}
 					}
 
 					// First check AdvantageEntityPolicy for programmatic filter
@@ -526,6 +542,23 @@ namespace IQToolkit.Data.Advantage
 
 				// Fall back to base implementation for non-associations or unfiltered associations
 				return base.GetMemberExpression(root, entity, member);
+			}
+
+			/// <summary>
+			/// Predicate for JOIN ON: parent string key is not null and not blank after TRIM.
+			/// ADS CHAR(n) stores '' as spaces; TRIM(col) &lt;&gt; '' is what actually rejects them.
+			/// <c>string.IsNullOrEmpty</c> formats as <c>col = ''</c>, which still matches spaces.
+			/// Composite keys: each string part is guarded, so any blank part fails the join.
+			/// </summary>
+			private static Expression BuildStringKeyNonEmptyPredicate(Expression parentKey)
+			{
+				if (parentKey == null || parentKey.Type != typeof(string) || StringTrimMethod == null)
+					return null;
+
+				var notNull = parentKey.NotEqual(Expression.Constant(null, typeof(string)));
+				var trimmed = Expression.Call(parentKey, StringTrimMethod);
+				var notBlank = trimmed.NotEqual(Expression.Constant(string.Empty));
+				return notNull.And(notBlank);
 			}
 
 			/// <summary>

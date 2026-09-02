@@ -187,6 +187,73 @@ namespace IQToolkit.Data.Advantage.Tests
                         // Row 4: NULL date/time
                         cmd.CommandText = "INSERT INTO CharDateTimeTable (Id, Label, DTMAJ_RAW) VALUES (4, 'Delta', NULL)";
                         cmd.ExecuteNonQuery();
+
+                        // AssocParents / AssocCodes — CHAR FK that may be blank.
+                        // ADS CHAR compare treats blank parent FK as equal to blank CODIF,
+                        // which would multiply a 1:1 LEFT JOIN without a non-empty key predicate.
+                        cmd.CommandText = @"
+                            CREATE TABLE AssocParents (
+                                ParentId Integer,
+                                LibLang Char(10),
+                                Devise Char(10),
+                                NumLoc Char(20)
+                            )
+                        ";
+                        cmd.ExecuteNonQuery();
+
+                        cmd.CommandText = "INSERT INTO AssocParents (ParentId, LibLang, Devise, NumLoc) VALUES (1, 'FR', 'EUR', '226060778')";
+                        cmd.ExecuteNonQuery();
+                        cmd.CommandText = "INSERT INTO AssocParents (ParentId, LibLang, Devise, NumLoc) VALUES (2, '', '', '226060779')";
+                        cmd.ExecuteNonQuery();
+                        cmd.CommandText = "INSERT INTO AssocParents (ParentId, LibLang, Devise, NumLoc) VALUES (3, 'FR', '', '226060780')";
+                        cmd.ExecuteNonQuery();
+
+                        cmd.CommandText = @"
+                            CREATE TABLE AssocCodes (
+                                Id Integer,
+                                Code Char(10),
+                                Type Char(10),
+                                Libelle Char(30)
+                            )
+                        ";
+                        cmd.ExecuteNonQuery();
+
+                        cmd.CommandText = "INSERT INTO AssocCodes (Id, Code, Type, Libelle) VALUES (1, 'FR', 'PAYS', 'France')";
+                        cmd.ExecuteNonQuery();
+                        cmd.CommandText = "INSERT INTO AssocCodes (Id, Code, Type, Libelle) VALUES (2, 'BE', 'PAYS', 'Belgique')";
+                        cmd.ExecuteNonQuery();
+
+                        string[] blankPays = { "France", "Belgique", "Italie", "Espagne", "Allemagne", "Suisse", "Portugal", "Pays-Bas", "Luxembourg", "Autriche", "Pologne" };
+                        for (int i = 0; i < blankPays.Length; i++)
+                        {
+                            cmd.CommandText = $"INSERT INTO AssocCodes (Id, Code, Type, Libelle) VALUES ({3 + i}, '', 'PAYS', '{blankPays[i]}')";
+                            cmd.ExecuteNonQuery();
+                        }
+
+                        cmd.CommandText = "INSERT INTO AssocCodes (Id, Code, Type, Libelle) VALUES (14, 'EUR', 'DEVISE', 'Euro')";
+                        cmd.ExecuteNonQuery();
+                        cmd.CommandText = "INSERT INTO AssocCodes (Id, Code, Type, Libelle) VALUES (15, 'USD', 'DEVISE', 'Dollar')";
+                        cmd.ExecuteNonQuery();
+                        cmd.CommandText = "INSERT INTO AssocCodes (Id, Code, Type, Libelle) VALUES (16, '', 'DEVISE', 'Franc')";
+                        cmd.ExecuteNonQuery();
+                        cmd.CommandText = "INSERT INTO AssocCodes (Id, Code, Type, Libelle) VALUES (17, '', 'DEVISE', 'Livre')";
+                        cmd.ExecuteNonQuery();
+
+                        cmd.CommandText = @"
+                            CREATE TABLE AssocDetails (
+                                DetailId Integer,
+                                NumLoc Char(20),
+                                Label Char(30)
+                            )
+                        ";
+                        cmd.ExecuteNonQuery();
+
+                        cmd.CommandText = "INSERT INTO AssocDetails (DetailId, NumLoc, Label) VALUES (1, '226060778', 'Line1')";
+                        cmd.ExecuteNonQuery();
+                        cmd.CommandText = "INSERT INTO AssocDetails (DetailId, NumLoc, Label) VALUES (2, '226060778', 'Line2')";
+                        cmd.ExecuteNonQuery();
+                        cmd.CommandText = "INSERT INTO AssocDetails (DetailId, NumLoc, Label) VALUES (3, '226060779', 'Line3')";
+                        cmd.ExecuteNonQuery();
                     }
                 }
                 // _initialized = true;

@@ -4,7 +4,7 @@
     <LangVersion>9.0</LangVersion>
     <AssemblyName>IQToolkit.Data.Advantage</AssemblyName>
     <RootNamespace>IQToolkit.Data.Advantage</RootNamespace>
-    <Version>1.0.4</Version>
+    <Version>1.0.5</Version>
     <Company>PGS Progisoftware</Company>
     <Product>IQToolkit.Data.Advantage</Product>
   </PropertyGroup>

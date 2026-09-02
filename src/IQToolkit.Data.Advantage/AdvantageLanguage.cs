@@ -85,6 +85,47 @@ namespace IQToolkit.Data.Advantage
                 return AdvantageFormatter.Format(expression, this.Language);
             }
 
+            public override Expression Parameterize(Expression expression)
+            {
+                expression = base.Parameterize(expression);
+                // ADS 2123: empty DbParameter has no type. Keep '' as a SQL literal.
+                return EmptyStringLiteralizer.Rewrite(expression);
+            }
+
+            /// <summary>
+            /// Core Parameterizer lifts every non-numeric constant, including <c>""</c>, into :pN.
+            /// ADS cannot type an empty string parameter (native error 2123). Replace those
+            /// NamedValues with a constant so the formatter emits <c>''</c> and no DbParameter is sent.
+            /// Only the SQL select is rewritten — same scope as <see cref="Parameterizer"/> —
+            /// so client-join projectors / outer keys keep their aliases for OuterParameterizer.
+            /// </summary>
+            class EmptyStringLiteralizer : DbExpressionVisitor
+            {
+                public static Expression Rewrite(Expression expression)
+                {
+                    return new EmptyStringLiteralizer().Visit(expression);
+                }
+
+                protected override Expression VisitProjection(ProjectionExpression proj)
+                {
+                    var select = (SelectExpression)this.Visit(proj.Select);
+                    return this.UpdateProjection(proj, select, proj.Projector, proj.Aggregator);
+                }
+
+                protected override Expression VisitClientJoin(ClientJoinExpression join)
+                {
+                    var projection = (ProjectionExpression)this.Visit(join.Projection);
+                    return this.UpdateClientJoin(join, projection, join.OuterKey, join.InnerKey);
+                }
+
+                protected override Expression VisitNamedValue(NamedValueExpression value)
+                {
+                    if (value.Value is ConstantExpression c && c.Value is string s && s.Length == 0)
+                        return Expression.Constant(string.Empty);
+                    return value;
+                }
+            }
+
             /// <summary>
             /// Removes .Value property access on Nullable types to allow SQL generator to handle nullable columns directly.
             /// Transforms: nullable.Value.Year => marker that formatter can understand
