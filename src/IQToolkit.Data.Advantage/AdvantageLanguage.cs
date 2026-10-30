@@ -74,9 +74,12 @@ namespace IQToolkit.Data.Advantage
                 // We aggressively remove known problematic columns if they are not explicitly projected in the final result.
                 // Note: UnusedColumnRemover should handle this, but sometimes fails to remove columns from the source table expression.
                 expression = MemoColumnPruner.Prune(expression);
-                
+
                 // Proceed with normal translation (binding, optimization, etc.)
-                return base.Translate(expression);
+                expression = base.Translate(expression);
+
+                // After the core merger, which leaves EXISTS / CASE projections in a derived table under the TOP.
+                return RowExpressionSubqueryMerger.Merge(expression);
             }
 
             public override string Format(Expression expression)
@@ -242,6 +245,99 @@ namespace IQToolkit.Data.Advantage
                     }
 
                     return source;
+                }
+            }
+
+            /// <summary>
+            /// ADS evaluates a derived table for every row before applying the TOP / START AT above it:
+            /// <c>SELECT TOP 128 .. FROM (SELECT .., EXISTS(..) AS c0 FROM LocGen WHERE ..) ORDER BY NUMLOC</c> runs the
+            /// EXISTS 40 000 times (≈ 280 ms), the same EXISTS in the TOP select runs it 128 times (≈ 3 ms).
+            /// The core SubqueryMerger only merges derived tables whose columns are plain columns, so a projection with
+            /// an EXISTS, a scalar subquery or a CASE stays nested. This merges that one case: a filtered table under a
+            /// paged select, when the outer WHERE / ORDER BY do not use those computed columns (they would then be
+            /// evaluated for every row whatever the shape).
+            /// </summary>
+            class RowExpressionSubqueryMerger : DbExpressionVisitor
+            {
+                public static Expression Merge(Expression expression)
+                {
+                    return new RowExpressionSubqueryMerger().Visit(expression);
+                }
+
+                protected override Expression VisitSelect(SelectExpression select)
+                {
+                    select = (SelectExpression)base.VisitSelect(select);
+
+                    if (!(select.From is SelectExpression from) || !CanMerge(select, from))
+                        return select;
+
+                    var merged = SubqueryRemover.Remove(select, from);
+                    var where = from.Where == null ? merged.Where
+                        : merged.Where == null ? from.Where
+                        : from.Where.And(merged.Where);
+                    return merged.SetWhere(where);
+                }
+
+                private static bool CanMerge(SelectExpression select, SelectExpression from)
+                {
+                    if (select.Take == null && select.Skip == null)
+                        return false;
+                    if (select.IsDistinct || select.IsReverse || (select.GroupBy != null && select.GroupBy.Count > 0))
+                        return false;
+
+                    if (!(from.From is TableExpression))
+                        return false;
+                    if (from.IsDistinct || from.IsReverse || from.Take != null || from.Skip != null
+                        || (from.OrderBy != null && from.OrderBy.Count > 0)
+                        || (from.GroupBy != null && from.GroupBy.Count > 0))
+                        return false;
+                    if (AggregateFinder.HasAggregates(select) || AggregateFinder.HasAggregates(from))
+                        return false;
+
+                    var computed = new HashSet<string>(from.Columns
+                        .Where(c => !(c.Expression is ColumnExpression) && c.Expression.NodeType != ExpressionType.Constant)
+                        .Select(c => c.Name));
+                    if (computed.Count == 0)
+                        return false; // plain columns: the core merger's business
+
+                    var usedOutsideColumns = new List<Expression> { select.Where };
+                    if (select.OrderBy != null)
+                        usedOutsideColumns.AddRange(select.OrderBy.Select(o => o.Expression));
+                    return !usedOutsideColumns
+                        .Where(e => e != null)
+                        .SelectMany(e => ReferencedColumnGatherer.Gather(e))
+                        .Any(c => c.Alias == from.Alias && computed.Contains(c.Name));
+                }
+            }
+
+            /// <summary>Aggregates in the select itself, not inside its subqueries (core AggregateChecker is internal).</summary>
+            class AggregateFinder : DbExpressionVisitor
+            {
+                private bool found;
+
+                public static bool HasAggregates(SelectExpression select)
+                {
+                    var finder = new AggregateFinder();
+                    finder.Visit(select.Where);
+                    finder.VisitOrderBy(select.OrderBy);
+                    finder.VisitColumnDeclarations(select.Columns);
+                    return finder.found;
+                }
+
+                protected override Expression VisitAggregate(AggregateExpression aggregate)
+                {
+                    this.found = true;
+                    return aggregate;
+                }
+
+                protected override Expression VisitSubquery(SubqueryExpression subquery)
+                {
+                    return subquery;
+                }
+
+                protected override Expression VisitSelect(SelectExpression select)
+                {
+                    return select;
                 }
             }
 

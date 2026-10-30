@@ -79,10 +79,13 @@ namespace IQToolkit.Data.Advantage
 
 			public override Expression Translate(Expression expression)
 			{
+                // Step 0a: list.Contains(x) on a captured collection -> Enumerable.Contains, which QueryBinder turns into IN (...)
+                expression = CollectionContainsRewriter.Rewrite(expression);
+
                 // Step 0: Rewrite Select(nav).Distinct() to explicit Join/SelectMany
                 // This avoids QueryBinder generating inefficient SQL (subquery with DISTINCT *)
                 // which causes issues with Advantage (MEMO columns) and performance.
-                expression = NavigationPropertyRewriter.Rewrite(_mapping, expression);
+                expression = NavigationPropertyRewriter.Rewrite(_mapping, this.Translator.Police.Policy as AdvantageEntityPolicy, expression);
 
 				// Step 1: Rewrite composite field comparisons (e.g., DTDEP > x) into date/time logic
 				expression = AdvantageCompositeFieldRewriter.Rewrite(expression);
@@ -673,24 +676,66 @@ namespace IQToolkit.Data.Advantage
 				return new EntityExpression(entity, this.BuildEntityExpression(entity, assignments));
 			}
 
+			/// <summary>
+			/// A captured <c>List&lt;T&gt;</c> / <c>HashSet&lt;T&gt;</c> compiles <c>codes.Contains(x)</c> to an instance call,
+			/// which QueryBinder does not translate ("The method 'Contains' is not supported").
+			/// <c>Enumerable.Contains(constant, x)</c> is the form it binds to <c>x IN (...)</c> (and to <c>0 &lt;&gt; 0</c> when empty).
+			/// Runs after the partial evaluator, so a captured collection is already a constant.
+			/// </summary>
+			private class CollectionContainsRewriter : ExpressionVisitor
+			{
+				public static Expression Rewrite(Expression expression)
+				{
+					return new CollectionContainsRewriter().Visit(expression);
+				}
+
+				protected override Expression VisitMethodCall(MethodCallExpression m)
+				{
+					var visited = base.VisitMethodCall(m);
+					if (visited is MethodCallExpression call
+						&& call.Method.Name == nameof(Enumerable.Contains)
+						&& call.Arguments.Count == 1
+						&& call.Object is ConstantExpression collection
+						&& collection.Value != null
+						&& !(collection.Value is string)
+						&& !(collection.Value is IQueryable))
+					{
+						var elementType = call.Arguments[0].Type;
+						var enumerableType = typeof(IEnumerable<>).MakeGenericType(elementType);
+						if (enumerableType.IsAssignableFrom(collection.Type))
+						{
+							return Expression.Call(
+								typeof(Enumerable),
+								nameof(Enumerable.Contains),
+								new[] { elementType },
+								Expression.Constant(collection.Value, enumerableType),
+								call.Arguments[0]);
+						}
+					}
+					return visited;
+				}
+			}
+
 			private class NavigationPropertyRewriter : ExpressionVisitor
 			{
 				private readonly AdvantageMapping mapping;
+				private readonly AdvantageEntityPolicy policy;
 				private IQueryProvider provider;
 
-				private NavigationPropertyRewriter(AdvantageMapping mapping, IQueryProvider provider)
+				private NavigationPropertyRewriter(AdvantageMapping mapping, AdvantageEntityPolicy policy, IQueryProvider provider)
 				{
 					this.mapping = mapping;
+					this.policy = policy;
 					this.provider = provider;
 				}
 
-				public static Expression Rewrite(AdvantageMapping mapping, Expression expression)
+				public static Expression Rewrite(AdvantageMapping mapping, AdvantageEntityPolicy policy, Expression expression)
 				{
 					var finder = new ProviderFinder();
 					finder.Find(expression);
 					if (finder.Provider == null) return expression;
 
-					return new NavigationPropertyRewriter(mapping, finder.Provider).Visit(expression);
+					return new NavigationPropertyRewriter(mapping, policy, finder.Provider).Visit(expression);
 				}
 
 				class ProviderFinder : ExpressionVisitor
@@ -714,26 +759,30 @@ namespace IQToolkit.Data.Advantage
 
 				protected override Expression VisitMethodCall(MethodCallExpression m)
 				{
+					// A server-mode grid lists a column's values as GroupBy(r => r.Col).Select(g => g.Key):
+					// same result as Select(r => r.Col).Distinct(), and the binder gets it wrong the same way on an association.
+					if (IsGroupByKeySelect(m, out var groupBy))
+					{
+						var source = this.Visit(groupBy.Arguments[0]);
+						var rewritten = TryRewriteDistinctOverNavigation(source, GetLambda(groupBy.Arguments[1]));
+						if (rewritten != null)
+							return rewritten;
+					}
+
 					if (m.Method.Name == "Distinct" && m.Arguments.Count == 1)
 					{
 						var source = this.Visit(m.Arguments[0]);
-						
+
 						// Check if source is Select(x => x.Nav.Prop)
-						if (source is MethodCallExpression select && 
-							select.Method.Name == "Select" && 
+						if (source is MethodCallExpression select &&
+							select.Method.Name == "Select" &&
 							select.Arguments.Count == 2)
 						{
-							var selector = (LambdaExpression)((UnaryExpression)select.Arguments[1]).Operand;
-							var param = selector.Parameters[0];
-							var body = selector.Body;
-
-							if (body is MemberExpression mem && IsNavigationProperty(mem, out var entityType, out var member))
-							{
-								// Rewrite to SelectMany
-								return RewriteToSelectMany(select.Arguments[0], param, mem, entityType, member);
-							}
+							var rewritten = TryRewriteDistinctOverNavigation(select.Arguments[0], GetLambda(select.Arguments[1]));
+							if (rewritten != null)
+								return rewritten;
 						}
-						
+
 						// Reconstruct Distinct with potentially rewritten source
 						if (source != m.Arguments[0])
 						{
@@ -773,6 +822,100 @@ namespace IQToolkit.Data.Advantage
                     */
 
 					return base.VisitMethodCall(m);
+				}
+
+				private static LambdaExpression GetLambda(Expression e)
+				{
+					while (e.NodeType == ExpressionType.Quote)
+						e = ((UnaryExpression)e).Operand;
+					return e as LambdaExpression;
+				}
+
+				private static bool IsGroupByKeySelect(MethodCallExpression m, out MethodCallExpression groupBy)
+				{
+					groupBy = null;
+					if (m.Method.DeclaringType != typeof(Queryable) || m.Method.Name != "Select" || m.Arguments.Count != 2)
+						return false;
+					if (!(m.Arguments[0] is MethodCallExpression source)
+						|| source.Method.DeclaringType != typeof(Queryable)
+						|| source.Method.Name != "GroupBy"
+						|| source.Arguments.Count != 2)
+						return false;
+					var resultSelector = GetLambda(m.Arguments[1]);
+					if (resultSelector == null
+						|| !(resultSelector.Body is MemberExpression key)
+						|| key.Expression != resultSelector.Parameters[0]
+						|| key.Member.Name != "Key")
+						return false;
+					groupBy = source;
+					return true;
+				}
+
+				/// <summary>
+				/// Distinct values of <c>x.Nav.Prop</c>, also when the grid reaches it through its own projection
+				/// (<c>Select(x => new Row { Col = x.Nav.Prop }).Select(r => r.Col)</c>). Null when the selected value is not
+				/// a navigation property: the binder handles plain columns correctly.
+				/// </summary>
+				private Expression TryRewriteDistinctOverNavigation(Expression source, LambdaExpression selector)
+				{
+					if (selector == null)
+						return null;
+
+					var param = selector.Parameters[0];
+					var body = selector.Body;
+					if (body is MemberExpression projected && projected.Expression == param
+						&& TryInlineProjectedMember(source, projected.Member, out var innerSource, out var innerParam, out var binding))
+					{
+						source = innerSource;
+						param = innerParam;
+						body = binding;
+					}
+
+					if (body is MemberExpression mem
+						&& IsNavigationProperty(mem, out var entityType, out var member)
+						&& ((MemberExpression)mem.Expression).Expression == param)
+					{
+						return RewriteToSelectMany(source, param, mem, entityType, member);
+					}
+					return null;
+				}
+
+				/// <summary>
+				/// <c>Select(src, p =&gt; new Row { M = expr, ... })</c> read back as <c>r.M</c>: returns <c>src</c>, <c>p</c> and <c>expr</c>.
+				/// </summary>
+				private static bool TryInlineProjectedMember(Expression source, MemberInfo member, out Expression innerSource, out ParameterExpression innerParam, out Expression binding)
+				{
+					innerSource = null;
+					innerParam = null;
+					binding = null;
+
+					if (!(source is MethodCallExpression select)
+						|| select.Method.DeclaringType != typeof(Queryable)
+						|| select.Method.Name != "Select"
+						|| select.Arguments.Count != 2)
+						return false;
+					var projector = GetLambda(select.Arguments[1]);
+					if (projector == null || projector.Parameters.Count != 1)
+						return false;
+
+					if (projector.Body is MemberInitExpression init)
+					{
+						binding = init.Bindings.OfType<MemberAssignment>().FirstOrDefault(b => b.Member.Name == member.Name)?.Expression;
+					}
+					else if (projector.Body is NewExpression nex && nex.Members != null)
+					{
+						for (int i = 0; i < nex.Members.Count; i++)
+						{
+							if (nex.Members[i].Name == member.Name || nex.Members[i].Name == "get_" + member.Name)
+								binding = nex.Arguments[i];
+						}
+					}
+					if (binding == null)
+						return false;
+
+					innerSource = select.Arguments[0];
+					innerParam = projector.Parameters[0];
+					return true;
 				}
 
                 class NavigationFinder : ExpressionVisitor
@@ -971,17 +1114,11 @@ namespace IQToolkit.Data.Advantage
 					
                     if (fkMembers.Count == 0 || pkMembers.Count == 0) return null;
 
-					Expression whereBody = null;
-					for (int i = 0; i < fkMembers.Count; i++)
-					{
-						var fk = Expression.MakeMemberAccess(param, fkMembers[i]);
-						var pk = Expression.MakeMemberAccess(yParam, pkMembers[i]);
-						var eq = Expression.Equal(pk, fk);
-						whereBody = (whereBody == null) ? eq : Expression.AndAlso(whereBody, eq);
-					}
-					
+					// Same join condition as GetMemberExpression builds for the association, so the distinct values are
+					// the ones the projection shows: key equality, blank CHAR key guard, association filters.
+					var whereBody = BuildAssociationCondition(param, yParam, entity, relatedEntity, relationMember, fkMembers, pkMembers);
 					var whereLambda = Expression.Lambda(whereBody, yParam);
-					
+
 					// Call Where
 					var whereCall = Expression.Call(
 						typeof(Queryable),
@@ -990,11 +1127,17 @@ namespace IQToolkit.Data.Advantage
 						tableExpression,
 						Expression.Quote(whereLambda)
 					);
-					
+
+					// LEFT join: a row without a related record (blank or unknown code) contributes NULL, as in the projection.
+					var defaultIfEmptyMethod = typeof(Queryable).GetMethods()
+						.First(dm => dm.Name == "DefaultIfEmpty" && dm.GetParameters().Length == 1)
+						.MakeGenericMethod(relatedType);
+					var defaultIfEmptyCall = Expression.Call(defaultIfEmptyMethod, whereCall);
+
                     // Construct lambda with explicit return type IEnumerable<T> to satisfy SelectMany signature
                     // while keeping the body as IQueryable (which QueryBinder understands)
                     var funcType = typeof(Func<,>).MakeGenericType(param.Type, typeof(IEnumerable<>).MakeGenericType(relatedType));
-                    var collectionSelector = Expression.Lambda(funcType, whereCall, param);
+                    var collectionSelector = Expression.Lambda(funcType, defaultIfEmptyCall, param);
 
 					// Build ResultSelector: (x, y) => y.Prop
 					// mem is x.Nav.Prop. We want y.Prop.
@@ -1036,6 +1179,45 @@ namespace IQToolkit.Data.Advantage
                         groupByCall,
                         Expression.Quote(Expression.Lambda(keyAccess, groupParam))
                     );
+				}
+
+				private Expression BuildAssociationCondition(ParameterExpression param, ParameterExpression yParam, MappingEntity entity, MappingEntity relatedEntity, MemberInfo relationMember, List<MemberInfo> fkMembers, List<MemberInfo> pkMembers)
+				{
+					Expression condition = null;
+					for (int i = 0; i < fkMembers.Count; i++)
+					{
+						var fk = Expression.MakeMemberAccess(param, fkMembers[i]);
+						var pk = Expression.MakeMemberAccess(yParam, pkMembers[i]);
+						var eq = Expression.Equal(pk, fk);
+						condition = (condition == null) ? eq : Expression.AndAlso(condition, eq);
+
+						if (mapping.IsSingletonRelationship(entity, relationMember))
+						{
+							var nonEmpty = BuildStringKeyNonEmptyPredicate(fk);
+							if (nonEmpty != null)
+								condition = Expression.AndAlso(condition, nonEmpty);
+						}
+					}
+
+					var policyFilter = policy?.GetAssociationFilter(relationMember);
+					if (policyFilter != null)
+						condition = Expression.AndAlso(condition, ExpressionReplacer.Replace(policyFilter.Body, policyFilter.Parameters[0], yParam));
+
+					var filterAttr = relationMember.GetCustomAttributes(typeof(AssociationFilterAttribute), true)
+						.Cast<AssociationFilterAttribute>()
+						.FirstOrDefault();
+					if (filterAttr != null && !string.IsNullOrWhiteSpace(filterAttr.Column) && !string.IsNullOrWhiteSpace(filterAttr.Value))
+					{
+						var filterMember = relatedEntity.StaticType.GetProperty(filterAttr.Column) ??
+							(MemberInfo)relatedEntity.StaticType.GetField(filterAttr.Column);
+						if (filterMember != null && mapping.IsColumn(relatedEntity, filterMember))
+						{
+							var filterValue = Expression.Constant(filterAttr.Value, TypeHelper.GetMemberType(filterMember));
+							condition = Expression.AndAlso(condition, Expression.Equal(Expression.MakeMemberAccess(yParam, filterMember), filterValue));
+						}
+					}
+
+					return condition;
 				}
 			}
 		}
