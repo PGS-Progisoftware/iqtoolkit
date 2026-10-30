@@ -114,6 +114,24 @@ namespace IQToolkit.Data.Advantage.Tests
         }
 
         [Fact]
+        public void Association_OrderedBaseQuery_ReorderedByAssociation()
+        {
+            var provider = GetProvider();
+            var orders = provider.GetTable<Order>("Orders");
+
+            // The base query's ORDER BY ends up in a subquery on the left of the association's LEFT OUTER JOIN:
+            // ADS rejects it (Error 7200, NativeError 2115) unless OrderByRemover strips it.
+            var baseQuery = from o in orders
+                            orderby o.OrderId descending
+                            select new { o.OrderId, CustomerName = o.Customer.Name };
+
+            var list = baseQuery.OrderBy(x => x.CustomerName).ThenBy(x => x.OrderId).ToList();
+
+            Assert.Equal(3, list.Count);
+            Assert.Equal(new[] { "Alice", "Alice", "Bob" }, list.Select(x => x.CustomerName.Trim()).ToArray());
+        }
+
+        [Fact]
         public void Association_FilterOnAssociation()
         {
             var provider = GetProvider();

@@ -200,40 +200,48 @@ namespace IQToolkit.Data.Advantage
                     // Visit children first
                     select = (SelectExpression)base.VisitSelect(select);
 
-                    // If the FROM clause is a SelectExpression (subquery), check if we can remove its OrderBy
-                    if (select.From is SelectExpression subSelect)
+                    var from = RemoveFromSource(select.From);
+                    if (from != select.From)
+                    {
+                        return new SelectExpression(
+                            select.Alias,
+                            select.Columns,
+                            from,
+                            select.Where,
+                            select.OrderBy,
+                            select.GroupBy,
+                            select.IsDistinct,
+                            select.Skip,
+                            select.Take,
+                            select.IsReverse
+                        );
+                    }
+
+                    return select;
+                }
+
+                // A subquery can be the FROM itself or an operand of a join in the FROM: an association
+                // (e.g. OrderBy(x => x.Client.Nom)) puts the ordered base query on the left of a LEFT OUTER JOIN,
+                // and ADS rejects it there too (Error 7200, NativeError 2115).
+                private static Expression RemoveFromSource(Expression source)
+                {
+                    if (source is SelectExpression subSelect)
                     {
                         // If subquery has OrderBy but no Take/Skip, the OrderBy is redundant and invalid in many SQL dialects
                         if (subSelect.OrderBy != null && subSelect.OrderBy.Count > 0 && subSelect.Take == null && subSelect.Skip == null)
-                        {
-                            // Remove OrderBy from subquery
-                            return new SelectExpression(
-                                select.Alias,
-                                select.Columns,
-                                new SelectExpression(
-                                    subSelect.Alias,
-                                    subSelect.Columns,
-                                    subSelect.From,
-                                    subSelect.Where,
-                                    null, // Remove OrderBy
-                                    subSelect.GroupBy,
-                                    subSelect.IsDistinct,
-                                    subSelect.Skip,
-                                    subSelect.Take,
-                                    subSelect.IsReverse
-                                ),
-                                select.Where,
-                                select.OrderBy,
-                                select.GroupBy,
-                                select.IsDistinct,
-                                select.Skip,
-                                select.Take,
-                                select.IsReverse
-                            );
-                        }
+                            return subSelect.SetOrderBy(null);
+                        return subSelect;
                     }
-                    
-                    return select;
+
+                    if (source is JoinExpression join)
+                    {
+                        var left = RemoveFromSource(join.Left);
+                        var right = RemoveFromSource(join.Right);
+                        if (left != join.Left || right != join.Right)
+                            return new JoinExpression(join.Join, left, right, join.Condition);
+                    }
+
+                    return source;
                 }
             }
 
