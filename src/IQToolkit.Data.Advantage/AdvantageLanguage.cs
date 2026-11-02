@@ -92,7 +92,60 @@ namespace IQToolkit.Data.Advantage
             {
                 expression = base.Parameterize(expression);
                 // ADS 2123: empty DbParameter has no type. Keep '' as a SQL literal.
-                return EmptyStringLiteralizer.Rewrite(expression);
+                expression = EmptyStringLiteralizer.Rewrite(expression);
+                return CaseResultLiteralizer.Rewrite(expression);
+            }
+
+            /// <summary>
+            /// ADS refuses a parameter as a CASE result (Error 7200, NativeError 2159 "Parameter not allowed") and
+            /// cannot ORDER BY a CASE whose result contains one (NativeError 2145), so sorting or filtering on a
+            /// computed label (<c>x.A == "1" ? "Devis" : "Location"</c>) failed. String constants inside THEN / ELSE
+            /// become literals; parameters in the WHEN conditions are accepted and stay. Same scope as
+            /// <see cref="EmptyStringLiteralizer"/>.
+            /// </summary>
+            class CaseResultLiteralizer : DbExpressionVisitor
+            {
+                private int _resultDepth;
+
+                public static Expression Rewrite(Expression expression)
+                {
+                    return new CaseResultLiteralizer().Visit(expression);
+                }
+
+                protected override Expression VisitProjection(ProjectionExpression proj)
+                {
+                    var select = (SelectExpression)this.Visit(proj.Select);
+                    return this.UpdateProjection(proj, select, proj.Projector, proj.Aggregator);
+                }
+
+                protected override Expression VisitClientJoin(ClientJoinExpression join)
+                {
+                    var projection = (ProjectionExpression)this.Visit(join.Projection);
+                    return this.UpdateClientJoin(join, projection, join.OuterKey, join.InnerKey);
+                }
+
+                protected override Expression VisitConditional(ConditionalExpression c)
+                {
+                    var test = this.Visit(c.Test);
+                    _resultDepth++;
+                    try
+                    {
+                        var ifTrue = this.Visit(c.IfTrue);
+                        var ifFalse = this.Visit(c.IfFalse);
+                        return this.UpdateConditional(c, test, ifTrue, ifFalse);
+                    }
+                    finally
+                    {
+                        _resultDepth--;
+                    }
+                }
+
+                protected override Expression VisitNamedValue(NamedValueExpression value)
+                {
+                    if (_resultDepth > 0 && value.Value is ConstantExpression c && c.Value is string)
+                        return c;
+                    return value;
+                }
             }
 
             /// <summary>
@@ -254,8 +307,10 @@ namespace IQToolkit.Data.Advantage
             /// EXISTS 40 000 times (≈ 280 ms), the same EXISTS in the TOP select runs it 128 times (≈ 3 ms).
             /// The core SubqueryMerger only merges derived tables whose columns are plain columns, so a projection with
             /// an EXISTS, a scalar subquery or a CASE stays nested. This merges that one case: a filtered table under a
-            /// paged select, when the outer WHERE / ORDER BY do not use those computed columns (they would then be
+            /// select, when the outer WHERE / ORDER BY do not use those computed columns (they would then be
             /// evaluated for every row whatever the shape).
+            /// Sorting on a related column (<c>OrderBy(x => x.Client.Nom)</c>) puts the same derived table on the left
+            /// of the association's LEFT OUTER JOIN under the TOP: merged there too, its WHERE moving above the joins.
             /// </summary>
             class RowExpressionSubqueryMerger : DbExpressionVisitor
             {
@@ -268,7 +323,8 @@ namespace IQToolkit.Data.Advantage
                 {
                     select = (SelectExpression)base.VisitSelect(select);
 
-                    if (!(select.From is SelectExpression from) || !CanMerge(select, from))
+                    var from = FindMergeableSource(select.From);
+                    if (from == null || !CanMerge(select, from))
                         return select;
 
                     var merged = SubqueryRemover.Remove(select, from);
@@ -278,10 +334,32 @@ namespace IQToolkit.Data.Advantage
                     return merged.SetWhere(where);
                 }
 
+                // The derived table itself, or the leftmost operand of INNER / LEFT OUTER joins: filtering that operand
+                // before or after those joins gives the same rows. Not under a RIGHT side or an APPLY.
+                private static SelectExpression FindMergeableSource(Expression source)
+                {
+                    while (source is JoinExpression join)
+                    {
+                        if (join.Join != JoinType.InnerJoin && join.Join != JoinType.LeftOuter && join.Join != JoinType.SingletonLeftOuter)
+                            return null;
+                        source = join.Left;
+                    }
+                    return source as SelectExpression;
+                }
+
+                private static IEnumerable<Expression> JoinConditions(Expression source)
+                {
+                    while (source is JoinExpression join)
+                    {
+                        yield return join.Condition;
+                        source = join.Left;
+                    }
+                }
+
+                // Not only under a TOP: DevExpress server mode loads the visible rows with a keyed query
+                // (WHERE NUMLOC = :k ...) that has none, and the derived table would still compute every row.
                 private static bool CanMerge(SelectExpression select, SelectExpression from)
                 {
-                    if (select.Take == null && select.Skip == null)
-                        return false;
                     if (select.IsDistinct || select.IsReverse || (select.GroupBy != null && select.GroupBy.Count > 0))
                         return false;
 
@@ -303,6 +381,7 @@ namespace IQToolkit.Data.Advantage
                     var usedOutsideColumns = new List<Expression> { select.Where };
                     if (select.OrderBy != null)
                         usedOutsideColumns.AddRange(select.OrderBy.Select(o => o.Expression));
+                    usedOutsideColumns.AddRange(JoinConditions(select.From));
                     return !usedOutsideColumns
                         .Where(e => e != null)
                         .SelectMany(e => ReferencedColumnGatherer.Gather(e))

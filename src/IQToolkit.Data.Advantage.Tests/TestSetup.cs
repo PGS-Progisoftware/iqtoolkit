@@ -254,6 +254,58 @@ namespace IQToolkit.Data.Advantage.Tests
                         cmd.ExecuteNonQuery();
                         cmd.CommandText = "INSERT INTO AssocDetails (DetailId, NumLoc, Label) VALUES (3, '226060779', 'Line3')";
                         cmd.ExecuteNonQuery();
+
+                        // LookupParents / LookupCodes — a code table holding copies of some codes, like LocArt → LocCode.
+                        // Record number = insertion order; VO reads the copy with the lowest one.
+                        cmd.CommandText = @"
+                            CREATE TABLE LookupParents (
+                                ParentId Integer,
+                                Famille Char(10),
+                                Categorie Char(10),
+                                Groupe Char(10)
+                            )
+                        ";
+                        cmd.ExecuteNonQuery();
+
+                        cmd.CommandText = "INSERT INTO LookupParents (ParentId, Famille, Categorie, Groupe) VALUES (1, 'FROID', 'VERRE', 'G1')";
+                        cmd.ExecuteNonQuery();
+                        cmd.CommandText = "INSERT INTO LookupParents (ParentId, Famille, Categorie, Groupe) VALUES (2, 'CHAUD', 'INOX', 'G2')";
+                        cmd.ExecuteNonQuery();
+                        cmd.CommandText = "INSERT INTO LookupParents (ParentId, Famille, Categorie, Groupe) VALUES (3, 'FROID', '', '')";
+                        cmd.ExecuteNonQuery();
+                        cmd.CommandText = "INSERT INTO LookupParents (ParentId, Famille, Categorie, Groupe) VALUES (4, 'MOB', 'VERRE', 'G1')";
+                        cmd.ExecuteNonQuery();
+
+                        cmd.CommandText = @"
+                            CREATE TABLE LookupCodes (
+                                Id Integer,
+                                Type Char(10),
+                                Code Char(10),
+                                Libelle Char(30)
+                            )
+                        ";
+                        cmd.ExecuteNonQuery();
+
+                        string[] lookupCodes =
+                        {
+                            "1, 'FAMILLE', 'FROID', 'Froid'",
+                            "2, 'FAMILLE', 'CHAUD', 'Chaud'",
+                            "3, 'CATEGORIE', 'VERRE', 'Verre'",
+                            "4, 'FAMILLE', 'FROID', 'Froid'",              // identical copy
+                            "5, 'CATEGORIE', 'VERRE', 'Verre granite'",    // later copy, other label: VO never shows it
+                            "6, 'CATEGORIE', 'INOX', 'Inox'",
+                            "7, 'FAMILLE', 'MOB', 'Mobilier'",
+                            "8, 'GROUPE', 'G1', 'Groupe 1'",
+                            "9, 'GROUPE', 'G2', 'Groupe 2'",
+                            "10, 'FAMILLE', 'G1', 'Pas un groupe'",        // same code under another type: not a copy
+                            "11, 'GROUPE', '', 'Vide 1'",                  // blank copies: the join never matches them
+                            "12, 'GROUPE', '', 'Vide 2'",
+                        };
+                        foreach (var values in lookupCodes)
+                        {
+                            cmd.CommandText = $"INSERT INTO LookupCodes (Id, Type, Code, Libelle) VALUES ({values})";
+                            cmd.ExecuteNonQuery();
+                        }
                     }
                 }
                 // _initialized = true;

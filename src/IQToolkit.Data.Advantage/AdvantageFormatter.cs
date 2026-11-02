@@ -122,6 +122,18 @@ namespace IQToolkit.Data.Advantage
 			this.Write(this.Language.Quote(name));
 		}
 
+		protected override Expression VisitFunction(FunctionExpression func)
+		{
+			if (func.Name == AdvantageMapping.RecordNumberFunction && func.Arguments.Count == 1 && func.Arguments[0] is ColumnExpression column)
+			{
+				this.Write("RECNO(");
+				this.WriteAliasName(this.GetAliasName(column.Alias));
+				this.Write(")");
+				return func;
+			}
+			return base.VisitFunction(func);
+		}
+
 		protected override void WriteTableName(string name)
 		{
 			// Always quote table names for Advantage
@@ -191,7 +203,11 @@ namespace IQToolkit.Data.Advantage
 					{
 						this.Write(", ");
 					}
-					this.VisitValue(select.GroupBy[i]);
+					var alias = GroupByColumnAlias(select, select.GroupBy[i]);
+					if (alias != null)
+						this.WriteColumnName(alias);
+					else
+						this.VisitValue(select.GroupBy[i]);
 				}
 			}
 			if (select.OrderBy != null && select.OrderBy.Count > 0)
@@ -806,6 +822,52 @@ namespace IQToolkit.Data.Advantage
 				this.Write(" END)");
 			}
 			return c;
+		}
+
+		// String constants written inline (CASE results, IN lists, '') must not break out of the literal.
+		// A literal with a non-ASCII character ('Prêt') is a Unicode literal for ADS: comparing, sorting or grouping
+		// on it loads ICU, and ADS Local Server fails with error 1500 on clients without icudt40l.dat (our installs).
+		// CAST to SQL_CHAR converts it to the code page through Windows and needs no ICU.
+		protected override void WriteValue(object value)
+		{
+			if (value is string text)
+			{
+				bool ascii = IsAscii(text);
+				if (!ascii)
+					this.Write("CAST(");
+				this.Write("'");
+				this.Write(text.Replace("'", "''"));
+				this.Write("'");
+				if (!ascii)
+					this.Write($" AS SQL_CHAR({text.Length}))");
+				return;
+			}
+			base.WriteValue(value);
+		}
+
+		private static bool IsAscii(string text)
+		{
+			foreach (var ch in text)
+			{
+				if (ch >= 128)
+					return false;
+			}
+			return true;
+		}
+
+		// A computed key (a CASE label) is grouped by its alias in the SELECT list: ADS does not recognise the same
+		// expression written twice once it holds parameters (NativeError 2196 "Column not found in GROUP BY clause").
+		// ADS resolves a GROUP BY name to a column alias before a base column.
+		private static string GroupByColumnAlias(SelectExpression select, Expression groupExpr)
+		{
+			if (groupExpr is ColumnExpression)
+				return null;
+			foreach (var column in select.Columns)
+			{
+				if (!string.IsNullOrEmpty(column.Name) && DbExpressionComparer.AreEqual(column.Expression, groupExpr))
+					return column.Name;
+			}
+			return null;
 		}
 
 		protected override void WriteColumns(ReadOnlyCollection<ColumnDeclaration> columns)

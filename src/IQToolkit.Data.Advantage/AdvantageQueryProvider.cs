@@ -104,6 +104,39 @@ namespace IQToolkit.Data.Advantage
             return conn;
         }
 
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _holdsCopies
+            = new System.Collections.Concurrent.ConcurrentDictionary<string, bool>();
+
+        /// <summary>
+        /// Whether <paramref name="findCopiesSql"/> returns a row, run once per provider. Asked while a query is
+        /// translated, so on a connection of its own: this provider's may be serving another query.
+        /// </summary>
+        internal bool HoldsCopies(string findCopiesSql)
+        {
+            return _holdsCopies.GetOrAdd(findCopiesSql, this.ReturnsRow);
+        }
+
+        private bool ReturnsRow(string sql)
+        {
+            using (var connection = CreateConnection(this.Connection.ConnectionString))
+            using (var command = connection.CreateCommand())
+            {
+                connection.Open();
+                command.CommandText = sql;
+                using (var reader = command.ExecuteReader())
+                {
+                    bool found = reader.Read();
+                    if (this.Log != null)
+                    {
+                        this.Log.WriteLine(found ? "-- SQL (copies check): codes stored more than once" : "-- SQL (copies check): none");
+                        this.Log.WriteLine(sql);
+                        this.Log.WriteLine();
+                    }
+                    return found;
+                }
+            }
+        }
+
         class AdvantageExecutor : Executor
         {
             private readonly AdvantageQueryProvider _provider;

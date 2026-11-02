@@ -533,8 +533,22 @@ namespace IQToolkit.Data.Common
                 elemExpr = this.Visit(elementSelector.Body);
             }
 
-            // Use ProjectColumns to get group-by expressions from key expression
-            ProjectedColumns keyProjection = this.ProjectColumns(keyExpr, projection.Select.Alias, projection.Select.Alias);
+            var alias = this.GetNextAlias();
+
+            // Use ProjectColumns to get group-by expressions from key expression.
+            // Server affinity, as in BindDistinct: a computed key (CASE) is grouped as one expression. With the client
+            // affinity it was split into the columns it reads, and the key repeated once per combination of them.
+            // The key columns are declared on the group-by select itself, so the SELECT list carries the same
+            // expressions as the GROUP BY and the result reads the key from them.
+            // A key the server cannot compute whole (a getter evaluated on the client) leaves its constants as columns
+            // of their own: that one is still grouped on the columns it reads.
+            var keyAffinity = ProjectionAffinity.Server;
+            ProjectedColumns keyProjection = ColumnProjector.ProjectColumns(this.language, keyAffinity, keyExpr, null, alias, projection.Select.Alias);
+            if (keyProjection.Columns.Any(c => ReferencedColumnGatherer.Gather(c.Expression).Count == 0))
+            {
+                keyAffinity = ProjectionAffinity.Client;
+                keyProjection = ColumnProjector.ProjectColumns(this.language, keyAffinity, keyExpr, null, alias, projection.Select.Alias);
+            }
             var groupExprs = keyProjection.Columns.Select(c => c.Expression).ToArray();
 
             // make duplicate of source query as basis of element subquery by visiting the source again
@@ -545,9 +559,11 @@ namespace IQToolkit.Data.Common
             Expression subqueryKey = this.Visit(keySelector.Body);
 
             // use same projection trick to get group-by expressions based on subquery
-            ProjectedColumns subqueryKeyPC = this.ProjectColumns(subqueryKey, subqueryBasis.Select.Alias, subqueryBasis.Select.Alias);
+            ProjectedColumns subqueryKeyPC = ColumnProjector.ProjectColumns(this.language, keyAffinity, subqueryKey, null, subqueryBasis.Select.Alias, subqueryBasis.Select.Alias);
             var subqueryGroupExprs = subqueryKeyPC.Columns.Select(c => c.Expression).ToArray();
-            Expression subqueryCorrelation = this.BuildPredicateWithNullsEqual(subqueryGroupExprs, groupExprs);
+            // correlated on the key columns of the group-by select
+            var keyColumns = keyProjection.Columns.Select(c => (Expression)new ColumnExpression(c.Expression.Type, c.QueryType, alias, c.Name)).ToArray();
+            Expression subqueryCorrelation = this.BuildPredicateWithNullsEqual(subqueryGroupExprs, keyColumns);
 
             // compute element based on duplicated subquery
             Expression subqueryElemExpr = subqueryBasis.Projector;
@@ -565,8 +581,6 @@ namespace IQToolkit.Data.Common
                     new SelectExpression(elementAlias, elementPC.Columns, subqueryBasis.Select, subqueryCorrelation),
                     elementPC.Projector
                     );
-
-            var alias = this.GetNextAlias();
 
             // make it possible to tie aggregates back to this group-by
             GroupByInfo info = new GroupByInfo(alias, elemExpr);
@@ -589,20 +603,21 @@ namespace IQToolkit.Data.Common
                 resultExpr = 
                     Expression.New(
                         typeof(Grouping<,>).MakeGenericType(keyExpr.Type, subqueryElemExpr.Type).GetTypeInfo().DeclaredConstructors.First(),
-                        new Expression[] { keyExpr, elementSubquery }
+                        new Expression[] { keyProjection.Projector, elementSubquery }
                         );
 
                 resultExpr = Expression.Convert(resultExpr, typeof(IGrouping<,>).MakeGenericType(keyExpr.Type, subqueryElemExpr.Type));
             }
 
-            ProjectedColumns pc = this.ProjectColumns(resultExpr, alias, projection.Select.Alias);
+            ProjectedColumns pc = ColumnProjector.ProjectColumns(this.language, resultExpr, keyProjection.Columns, alias, projection.Select.Alias);
 
             // make it possible to tie aggregates back to this group-by
             NewExpression newResult = this.GetNewExpression(pc.Projector);
             if (newResult != null && newResult.Type.GetTypeInfo().IsGenericType && newResult.Type.GetGenericTypeDefinition() == typeof(Grouping<,>))
             {
+                // the same instance when the projection had nothing to remap in it
                 Expression projectedElementSubquery = newResult.Arguments[1];
-                this.groupByMap.Add(projectedElementSubquery, info);
+                this.groupByMap[projectedElementSubquery] = info;
             }
 
             return new ProjectionExpression(

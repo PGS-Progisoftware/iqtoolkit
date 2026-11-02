@@ -183,6 +183,53 @@ namespace IQToolkit.Data.Advantage.Tests
     }
 
     /// <summary>
+    /// Parent of a code table holding copies of some codes (no enforced key). Mirrors LocArt.FAMILLE / CATEGORIE → LocCode.
+    /// </summary>
+    [Table(Name = "LookupParents")]
+    public class LookupParent
+    {
+        [Column(IsPrimaryKey = true)]
+        public int ParentId { get; set; }
+
+        [Column(DbType = "Char(10)")]
+        public string Famille { get; set; }
+
+        [Column(DbType = "Char(10)")]
+        public string Categorie { get; set; }
+
+        [Column(DbType = "Char(10)")]
+        public string Groupe { get; set; }
+
+        [Association(KeyMembers = nameof(Famille), RelatedKeyMembers = nameof(LookupCode.Code))]
+        [AssociationFilter(nameof(LookupCode.Type), "FAMILLE")]
+        public LookupCode FamilleCode { get; set; }
+
+        [Association(KeyMembers = nameof(Categorie), RelatedKeyMembers = nameof(LookupCode.Code))]
+        [AssociationFilter(nameof(LookupCode.Type), "CATEGORIE")]
+        public LookupCode CategorieCode { get; set; }
+
+        [Association(KeyMembers = nameof(Groupe), RelatedKeyMembers = nameof(LookupCode.Code))]
+        [AssociationFilter(nameof(LookupCode.Type), "GROUPE")]
+        public LookupCode GroupeCode { get; set; }
+    }
+
+    [Table(Name = "LookupCodes")]
+    public class LookupCode
+    {
+        [Column(IsPrimaryKey = true)]
+        public int Id { get; set; }
+
+        [Column(DbType = "Char(10)")]
+        public string Type { get; set; }
+
+        [Column(DbType = "Char(10)")]
+        public string Code { get; set; }
+
+        [Column(DbType = "Char(30)")]
+        public string Libelle { get; set; }
+    }
+
+    /// <summary>
     /// Entity for CharDateTimeField tests.
     /// DTMAJ is stored as CHAR(12) in "yyyyMMddHHmm" format.
     /// </summary>

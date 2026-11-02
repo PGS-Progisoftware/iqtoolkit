@@ -30,6 +30,13 @@ namespace IQToolkit.Data.Advantage.Tests
             return AdvantageQueryProvider.Create($"Data Source={TestSetup.DataDir};ServerType=Local;TableType=CDX;ShowDeleted=False;");
         }
 
+        // As PCSLib connects: the projector evaluates a conditional client-side when the SQL does not need it,
+        // and without trimming c.City == "Paris" is false there for a CHAR(20) value.
+        private AdvantageQueryProvider GetTrimmingProvider()
+        {
+            return AdvantageQueryProvider.Create($"Data Source={TestSetup.DataDir};ServerType=Local;TableType=CDX;ShowDeleted=False;TrimTrailingSpaces=True;");
+        }
+
         private string Sql(AdvantageQueryProvider provider, IQueryable query)
         {
             var sql = provider.GetQueryText(query.Expression);
@@ -188,6 +195,23 @@ namespace IQToolkit.Data.Advantage.Tests
         }
 
         [Fact]
+        public void Exists_InProjection_KeyedFetch_IsEvaluatedForTheKeysOnly()
+        {
+            // DevExpress server mode loads the visible rows by key, without TOP
+            var provider = GetProvider();
+            var keys = new List<int> { 2, 3 };
+            var query = CustomerRows(provider).Where(r => keys.Contains(r.CustomerId));
+
+            var sql = Sql(provider, query);
+            var list = query.ToList().OrderBy(r => r.CustomerId).ToList();
+
+            Assert.Contains("EXISTS", sql, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotMatch(@"FROM\s*\(\s*SELECT[^()]*EXISTS", sql);
+            Assert.Equal(new[] { 2, 3 }, list.Select(r => r.CustomerId).ToArray());
+            Assert.Equal(new[] { true, false }, list.Select(r => r.HasOrders).ToArray());
+        }
+
+        [Fact]
         public void Exists_InProjection_WithAssociation_PagedByBaseColumn()
         {
             var provider = GetProvider();
@@ -209,6 +233,55 @@ namespace IQToolkit.Data.Advantage.Tests
             Assert.Equal(new[] { 101, 102 }, list.Select(r => r.OrderId).ToArray());
             Assert.Equal(new[] { "Alice", "Alice" }, list.Select(r => r.CustomerName.Trim()).ToArray());
             Assert.Equal(new[] { true, true }, list.Select(r => r.OtherOrders).ToArray());
+        }
+
+        [Fact]
+        public void Exists_InProjection_OrderedByAssociation_IsEvaluatedAfterTop()
+        {
+            var provider = GetProvider();
+            var orders = provider.GetTable<Order>("Orders");
+            var query = (from o in orders
+                         where o.OrderId > 0
+                         select new
+                         {
+                             o.OrderId,
+                             CustomerName = o.Customer.Name,
+                             OtherOrders = orders.Any(x => x.CustomerId == o.CustomerId && x.OrderId != o.OrderId)
+                         })
+                        .OrderByDescending(r => r.CustomerName).ThenBy(r => r.OrderId).Take(2);
+
+            var sql = Sql(provider, query);
+            var list = query.ToList();
+
+            // The sort needs the association's join under the TOP; the EXISTS must not stay in the derived table
+            // on the left of that join, where ADS evaluates it for every row.
+            var topSelect = sql.Substring(sql.IndexOf("TOP", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains("EXISTS", topSelect, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotMatch(@"FROM\s*\(\s*SELECT[^()]*EXISTS", topSelect);
+
+            Assert.Equal(new[] { 103, 101 }, list.Select(r => r.OrderId).ToArray());
+            Assert.Equal(new[] { "Bob", "Alice" }, list.Select(r => r.CustomerName.Trim()).ToArray());
+            Assert.Equal(new[] { false, true }, list.Select(r => r.OtherOrders).ToArray());
+        }
+
+        [Fact]
+        public void Exists_InProjection_FilteredAndOrderedByAssociation_KeepsTheFilter()
+        {
+            var provider = GetProvider();
+            var orders = provider.GetTable<Order>("Orders");
+            var list = (from o in orders
+                        where o.OrderId > 101
+                        select new
+                        {
+                            o.OrderId,
+                            CustomerName = o.Customer.Name,
+                            OtherOrders = orders.Any(x => x.CustomerId == o.CustomerId && x.OrderId != o.OrderId)
+                        })
+                       .Where(r => r.CustomerName != null)
+                       .OrderBy(r => r.CustomerName).ThenBy(r => r.OrderId).Take(10).ToList();
+
+            Assert.Equal(new[] { 102, 103 }, list.Select(r => r.OrderId).ToArray());
+            Assert.Equal(new[] { true, false }, list.Select(r => r.OtherOrders).ToArray());
         }
 
         [Fact]
@@ -296,6 +369,116 @@ namespace IQToolkit.Data.Advantage.Tests
             Assert.Equal(new[] { 2, 1 }, list.Select(r => r.CustomerId).ToArray());
         }
 
+        // ---------------------------------------------------------------- text CASE (computed labels)
+
+        [Fact]
+        public void ConditionalText_OrderedByText_WritesResultsInline()
+        {
+            var provider = GetTrimmingProvider();
+            var customers = provider.GetTable<Customer>("Customers");
+            var query = (from c in customers
+                         where c.CustomerId > 0
+                         select new { c.CustomerId, Label = c.City == "Paris" ? "Zeta" : "Alpha" })
+                        .OrderBy(r => r.Label).ThenBy(r => r.CustomerId).Take(10);
+
+            var sql = Sql(provider, query);
+            var list = query.ToList();
+
+            Assert.Contains("'Zeta'", sql);
+            Assert.Equal(new[] { 1, 3, 2 }, list.Select(r => r.CustomerId).ToArray());
+            Assert.Equal(new[] { "Alpha", "Alpha", "Zeta" }, list.Select(r => r.Label).ToArray());
+        }
+
+        [Fact]
+        public void ConditionalText_Concatenated_FilteredOnText()
+        {
+            var provider = GetTrimmingProvider();
+            var customers = provider.GetTable<Customer>("Customers");
+            var rows = from c in customers
+                       where c.CustomerId > 0
+                       select new { c.CustomerId, Label = (c.City == "Paris" ? "P" : "L") + (c.Name.StartsWith("C") ? "/c" : "") };
+
+            var list = rows.Where(r => r.Label == "L/c").ToList();
+            var sorted = rows.OrderByDescending(r => r.Label).ThenBy(r => r.CustomerId).ToList();
+
+            Assert.Equal(new[] { 3 }, list.Select(r => r.CustomerId).ToArray());
+            Assert.Equal(new[] { "P", "L/c", "L" }, sorted.Select(r => r.Label).ToArray());
+        }
+
+        // Alice and Charlie (London) share a label that the columns it reads (City, Name) tell apart
+        private static IQueryable<CustomerLabelRow> CustomerLabels(AdvantageQueryProvider provider)
+        {
+            return from c in provider.GetTable<Customer>("Customers")
+                   where c.CustomerId > 0
+                   select new CustomerLabelRow { CustomerId = c.CustomerId, Label = (c.City == "Paris" ? "P" : "Long label") + (c.Name.StartsWith("Z") ? "/z" : "") };
+        }
+
+        public class CustomerLabelRow
+        {
+            public int CustomerId { get; set; }
+            public string Label { get; set; }
+        }
+
+        [Fact]
+        public void ConditionalText_GroupByKey_GroupsOnTheLabel()
+        {
+            // The filter popup's values: grouped on the CASE, not on City, Name
+            var provider = GetTrimmingProvider();
+            var query = CustomerLabels(provider).GroupBy(r => r.Label).Select(g => g.Key);
+
+            var sql = Sql(provider, query);
+            var list = query.ToList();
+
+            // ADS groups by the alias of the CASE column (it does not match the expression written twice with parameters)
+            Assert.Matches(@"GROUP BY \[c\d+\]", sql);
+            Assert.Equal(new[] { "Long label", "P" }, list.OrderBy(x => x).ToArray());
+        }
+
+        [Fact]
+        public void ConditionalText_GroupByKeyWithCount_CountsPerLabel()
+        {
+            // Grouping the grid on the column
+            var provider = GetTrimmingProvider();
+            var query = CustomerLabels(provider).GroupBy(r => r.Label).Select(g => new { g.Key, Count = g.Count() });
+
+            Sql(provider, query);
+            var list = query.ToList().OrderBy(x => x.Key).ToList();
+
+            Assert.Equal(new[] { "Long label", "P" }, list.Select(x => x.Key).ToArray());
+            Assert.Equal(new[] { 2, 1 }, list.Select(x => x.Count).ToArray());
+        }
+
+        [Fact]
+        public void ConditionalText_Accented_SortsFiltersAndGroupsWithoutIcuData()
+        {
+            // Like our ADS Local Server installs, this test folder has no icudt40l.dat:
+            // an accented literal compared, sorted or grouped as Unicode fails with error 1500.
+            var provider = GetTrimmingProvider();
+            var rows = from c in provider.GetTable<Customer>("Customers")
+                       where c.CustomerId > 0
+                       select new CustomerLabelRow { CustomerId = c.CustomerId, Label = c.City == "Paris" ? "Prêt" : "Réservation" };
+
+            var sorted = rows.OrderBy(r => r.Label).ThenBy(r => r.CustomerId).Take(10);
+            Assert.Contains("CAST('Prêt' AS SQL_CHAR(4))", Sql(provider, sorted));
+
+            Assert.Equal(new[] { 2, 1, 3 }, sorted.ToList().Select(r => r.CustomerId).ToArray());
+            Assert.Equal(new[] { 2 }, rows.Where(r => r.Label == "Prêt").ToList().Select(r => r.CustomerId).ToArray());
+            Assert.Equal(new[] { "Prêt", "Réservation" }, rows.GroupBy(r => r.Label).Select(g => g.Key).ToList().OrderBy(x => x).ToArray());
+        }
+
+        [Fact]
+        public void ConditionalText_WithQuote_IsEscaped()
+        {
+            var provider = GetTrimmingProvider();
+            var customers = provider.GetTable<Customer>("Customers");
+            var list = (from c in customers
+                        where c.CustomerId > 0
+                        select new { c.CustomerId, Label = c.City == "Paris" ? "l'été" : "x" })
+                       .OrderBy(r => r.Label).ThenBy(r => r.CustomerId).ToList();
+
+            Assert.Equal(new[] { "l'été", "x", "x" }, list.Select(r => r.Label).ToArray());
+        }
+
         // ---------------------------------------------------------------- DISTINCT on a projected association
 
         [Fact]
@@ -360,6 +543,50 @@ namespace IQToolkit.Data.Advantage.Tests
             var list = query.ToList();
 
             Assert.Equal(new[] { "Alice", "Bob" }, list.Select(n => n.Trim()).OrderBy(n => n).ToArray());
+        }
+
+        // The Excel filter popup's values, as DevExpress LinqServerModeCore.GetUniqueValuesStatic builds them:
+        // Where(other columns' filter).GroupBy(col).OrderBy(g => g.Key).Select(g => g.Key).Take(maxCount)
+
+        [Fact]
+        public void FilterPopupValues_OnProjectedAssociationColumn_ReturnsSortedDistinctValues()
+        {
+            var provider = GetProvider();
+            var query = OrderRows(provider).GroupBy(r => r.CustomerName).OrderBy(g => g.Key).Select(g => g.Key).Take(10000);
+
+            Sql(provider, query);
+            var list = query.ToList();
+
+            Assert.Equal(new[] { "Alice", "Bob" }, list.Select(n => n.Trim()).ToArray());
+        }
+
+        [Fact]
+        public void FilterPopupValues_OnProjectedFilteredAssociationColumn_HonoursFilterAndBlankKey()
+        {
+            var provider = GetProvider();
+            var query = ParentRows(provider).GroupBy(r => r.LangueLibelle).OrderBy(g => g.Key).Select(g => g.Key).Take(10000);
+
+            Sql(provider, query);
+            var list = query.ToList();
+
+            Assert.Equal(2, list.Count);
+            Assert.Contains(list, x => x != null && x.Trim() == "France");
+            Assert.Contains(list, x => x == null);
+        }
+
+        [Fact]
+        public void FilterPopupValues_WithOtherColumnsFilter_ListsOnlyMatchingRows()
+        {
+            var provider = GetProvider();
+            // Orders 101 and 102 (both Alice) pass; the filter on the label itself goes through the association too
+            var query = OrderRows(provider)
+                .Where(r => r.Total < 250m && r.CustomerName != "Bob")
+                .GroupBy(r => r.CustomerName).OrderBy(g => g.Key).Select(g => g.Key).Take(10000);
+
+            Sql(provider, query);
+            var list = query.ToList();
+
+            Assert.Equal(new[] { "Alice" }, list.Select(n => n.Trim()).ToArray());
         }
 
         // ---------------------------------------------------------------- associations stay joined after TOP

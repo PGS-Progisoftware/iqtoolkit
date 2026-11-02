@@ -15,7 +15,13 @@ namespace IQToolkit.Data.Advantage
 	/// </summary>
 	public class AdvantageMapping : AttributeMapping
 	{
-		public AdvantageMapping(Type contextType = null) 
+		/// <summary>
+		/// <see cref="FunctionExpression"/> name written as <c>RECNO(alias)</c>. Its single argument is any column of the
+		/// table: the record number has no column, the argument only carries the table alias through the rewrites.
+		/// </summary>
+		internal const string RecordNumberFunction = "RECNO";
+
+		public AdvantageMapping(Type contextType = null)
 			: base(contextType)
 		{
 		}
@@ -68,6 +74,7 @@ namespace IQToolkit.Data.Advantage
 		private class AdvantageMapper : AdvancedMapper
 		{
 			private readonly AdvantageMapping _mapping;
+			private AdvantageQueryProvider _provider;
 			private static readonly MethodInfo StringTrimMethod =
 				typeof(string).GetMethod(nameof(string.Trim), Type.EmptyTypes);
 
@@ -79,6 +86,11 @@ namespace IQToolkit.Data.Advantage
 
 			public override Expression Translate(Expression expression)
 			{
+				// Runs the copies check of KeepFirstCopyPerKey
+				var finder = new NavigationPropertyRewriter.ProviderFinder();
+				finder.Find(expression);
+				_provider = finder.Provider as AdvantageQueryProvider;
+
                 // Step 0a: list.Contains(x) on a captured collection -> Enumerable.Contains, which QueryBinder turns into IN (...)
                 expression = CollectionContainsRewriter.Rewrite(expression);
 
@@ -471,56 +483,12 @@ namespace IQToolkit.Data.Advantage
 						}
 					}
 
-					// First check AdvantageEntityPolicy for programmatic filter
-					var policy = this.Translator.Police.Policy as AdvantageEntityPolicy;
-					if (policy != null)
-					{
-						var filter = policy.GetAssociationFilter(member);
-						if (filter != null)
-						{
-							// Convert filter lambda to column expressions with proper table alias
-							var filterParam = filter.Parameters[0];
-							var filterCondition = MemberToColumnRewriter.Rewrite(
-								filter.Body,
-								filterParam,
-								projection.Select.Alias,
-								relatedEntity,
-								this);
+					// Becomes part of the JOIN ON condition
+					where = this.AddAssociationFilters(where, member, relatedEntity, projection.Select.Alias);
 
-							// Add filter to WHERE clause (becomes part of JOIN ON condition)
-							where = (where != null) ? where.And(filterCondition) : filterCondition;
-						}
-					}
-
-					// Then check for AssociationFilterAttribute (Advantage-specific)
-					var filterAttr = member.GetCustomAttributes(typeof(AssociationFilterAttribute), true)
-						.Cast<AssociationFilterAttribute>()
-						.FirstOrDefault();
-					
-					if (filterAttr != null && !string.IsNullOrWhiteSpace(filterAttr.Column) && !string.IsNullOrWhiteSpace(filterAttr.Value))
-					{
-						// Build simple equality: relatedTable.Column = 'Value'
-						var filterMember = relatedEntity.StaticType.GetProperty(filterAttr.Column) ?? 
-							(MemberInfo)relatedEntity.StaticType.GetField(filterAttr.Column);
-						
-						if (filterMember != null && _mapping.IsColumn(relatedEntity, filterMember))
-						{
-							var columnName = _mapping.GetColumnName(relatedEntity, filterMember);
-							var columnType = this.GetColumnType(relatedEntity, filterMember);
-
-							var columnExpr = new ColumnExpression(
-								TypeHelper.GetMemberType(filterMember), 
-								columnType, 
-								projection.Select.Alias, 
-								columnName);
-
-							var valueExpr = Expression.Constant(filterAttr.Value, TypeHelper.GetMemberType(filterMember));
-							var filterCondition = Expression.Equal(columnExpr, valueExpr);
-
-							// Add filter to WHERE clause (becomes part of JOIN ON condition)
-							where = (where != null) ? where.And(filterCondition) : filterCondition;
-						}
-					}
+					var related = projection.Select;
+					if (_mapping.IsSingletonRelationship(entity, member))
+						(related, where) = this.KeepFirstCopyPerKey(related, where, relatedEntity, associatedMembers, member);
 
 					TableAlias newAlias = new TableAlias();
 					var pc = ColumnProjector.ProjectColumns(
@@ -535,7 +503,7 @@ namespace IQToolkit.Data.Advantage
 						typeof(IEnumerable<>).MakeGenericType(pc.Projector.Type));
 
 					var result = new ProjectionExpression(
-						new SelectExpression(newAlias, pc.Columns, projection.Select, where),
+						new SelectExpression(newAlias, pc.Columns, related, where),
 						pc.Projector,
 						aggregator
 					);
@@ -545,6 +513,127 @@ namespace IQToolkit.Data.Advantage
 
 				// Fall back to base implementation for non-associations or unfiltered associations
 				return base.GetMemberExpression(root, entity, member);
+			}
+
+			/// <summary>
+			/// ANDs to <paramref name="where"/> the association's filters on the related table under <paramref name="alias"/>:
+			/// the <see cref="AdvantageEntityPolicy"/> one, then <see cref="AssociationFilterAttribute"/>.
+			/// </summary>
+			private Expression AddAssociationFilters(Expression where, MemberInfo member, MappingEntity relatedEntity, TableAlias alias)
+			{
+				var policy = this.Translator.Police.Policy as AdvantageEntityPolicy;
+				var filter = policy?.GetAssociationFilter(member);
+				if (filter != null)
+				{
+					var filterCondition = MemberToColumnRewriter.Rewrite(filter.Body, filter.Parameters[0], alias, relatedEntity, this);
+					where = (where != null) ? where.And(filterCondition) : filterCondition;
+				}
+
+				var filterAttr = member.GetCustomAttributes(typeof(AssociationFilterAttribute), true)
+					.Cast<AssociationFilterAttribute>()
+					.FirstOrDefault();
+
+				if (filterAttr != null && !string.IsNullOrWhiteSpace(filterAttr.Column) && !string.IsNullOrWhiteSpace(filterAttr.Value))
+				{
+					// relatedTable.Column = 'Value'
+					var filterMember = relatedEntity.StaticType.GetProperty(filterAttr.Column) ??
+						(MemberInfo)relatedEntity.StaticType.GetField(filterAttr.Column);
+
+					if (filterMember != null && _mapping.IsColumn(relatedEntity, filterMember))
+					{
+						var columnExpr = this.CreateColumn(relatedEntity, filterMember, alias);
+						var valueExpr = Expression.Constant(filterAttr.Value, TypeHelper.GetMemberType(filterMember));
+						var filterCondition = Expression.Equal(columnExpr, valueExpr);
+						where = (where != null) ? where.And(filterCondition) : filterCondition;
+					}
+				}
+
+				return where;
+			}
+
+			// Longer than a DBF field name (10 characters), so it cannot hide a column of the table.
+			private const string RecordNumberColumn = "RECORDNUMBER";
+
+			/// <summary>
+			/// Without enforced keys a table can hold several copies of a code (decades-old VO data does), and joining
+			/// them all multiplies the parent row: a grid keyed on the parent then never finishes loading. VO reads a
+			/// code through its index and lands on the copy with the lowest record number, so the join keeps that copy:
+			/// <c>LEFT JOIN (SELECT ..., RECNO(t) AS RECORDNUMBER FROM T t) r ON r.RECORDNUMBER IN
+			/// (SELECT MIN(RECNO(c)) FROM T c WHERE filter GROUP BY key) AND key = fk ...</c>
+			/// Shaped for the core rewrites, which move the association's WHERE into the ON and re-project what it uses:
+			/// a <c>WHERE RECNO(t) IN</c> on the related table would be merged there and RECNO(t) split from its table;
+			/// the computed column keeps the derived table from being merged, and MIN is a function rather than an
+			/// aggregate so the re-projection leaves it in its subquery. An INNER JOIN on the right of the LEFT JOIN
+			/// instead would be read by ADS as filtering the whole row, bracketed or not.
+			/// The GROUP BY runs over the related table on every query, so it is added only when the table holds
+			/// copies, checked once per provider.
+			/// </summary>
+			private (SelectExpression Select, Expression Where) KeepFirstCopyPerKey(
+				SelectExpression select, Expression where, MappingEntity relatedEntity, List<MemberInfo> keyMembers, MemberInfo association)
+			{
+				if (_provider == null || !(select.From is TableExpression table) || select.Where != null)
+					return (select, where);
+
+				var copies = new TableExpression(new TableAlias(), relatedEntity, table.Name);
+				var copyKeys = keyMembers.Select(m => this.CreateColumn(relatedEntity, m, copies.Alias)).ToList();
+				var copyFilter = this.AddAssociationFilters(null, association, relatedEntity, copies.Alias);
+
+				if (!_provider.HoldsCopies(this.FindCopiesSql(copies, copyKeys, copyFilter)))
+					return (select, where);
+
+				var intType = this.Translator.Linguist.Language.TypeSystem.GetColumnType(typeof(int));
+				var firstCopies = new SelectExpression(
+					new TableAlias(),
+					new[] { new ColumnDeclaration(RecordNumberColumn, new FunctionExpression(typeof(int), "MIN", new Expression[] { RecordNumber(copyKeys[0]) }), intType) },
+					copies, copyFilter, null, copyKeys);
+
+				var tableKey = this.CreateColumn(relatedEntity, keyMembers[0], table.Alias);
+				var withRecordNumber = select.SetColumns(select.Columns.Concat(new[] { new ColumnDeclaration(RecordNumberColumn, RecordNumber(tableKey), intType) }));
+				var recordNumber = new ColumnExpression(typeof(int), intType, select.Alias, RecordNumberColumn);
+				return (withRecordNumber, where.And(new InExpression(recordNumber, firstCopies)));
+			}
+
+			/// <summary>
+			/// <c>SELECT TOP 1 n FROM (SELECT COUNT(*) AS n FROM T WHERE filter AND key not blank GROUP BY key) WHERE n &gt; 1</c>.
+			/// Blank codes are left out: the join never matches them (<see cref="BuildStringKeyNonEmptyPredicate"/>).
+			/// </summary>
+			private string FindCopiesSql(TableExpression table, List<ColumnExpression> keys, Expression filter)
+			{
+				var where = filter;
+				foreach (var key in keys)
+				{
+					var nonEmpty = BuildStringKeyNonEmptyPredicate(key);
+					if (nonEmpty != null)
+						where = (where != null) ? where.And(nonEmpty) : nonEmpty;
+				}
+
+				var language = this.Translator.Linguist.Language;
+				var intType = language.TypeSystem.GetColumnType(typeof(int));
+				var counts = new SelectExpression(
+					new TableAlias(),
+					new[] { new ColumnDeclaration("n", new AggregateExpression(typeof(int), "Count", null, false), intType) },
+					table, where, null, keys);
+				var count = new ColumnExpression(typeof(int), intType, counts.Alias, "n");
+				var copies = new SelectExpression(
+					new TableAlias(),
+					new[] { new ColumnDeclaration("n", count, intType) },
+					counts, Expression.GreaterThan(count, Expression.Constant(1)), null, null, false, null, Expression.Constant(1), false);
+
+				return AdvantageFormatter.Format(copies, language);
+			}
+
+			private ColumnExpression CreateColumn(MappingEntity entity, MemberInfo member, TableAlias alias)
+			{
+				return new ColumnExpression(
+					TypeHelper.GetMemberType(member),
+					this.GetColumnType(entity, member),
+					alias,
+					_mapping.GetColumnName(entity, member));
+			}
+
+			private static FunctionExpression RecordNumber(ColumnExpression anyColumnOfTheTable)
+			{
+				return new FunctionExpression(typeof(int), RecordNumberFunction, new Expression[] { anyColumnOfTheTable });
 			}
 
 			/// <summary>
@@ -738,7 +827,7 @@ namespace IQToolkit.Data.Advantage
 					return new NavigationPropertyRewriter(mapping, policy, finder.Provider).Visit(expression);
 				}
 
-				class ProviderFinder : ExpressionVisitor
+				internal class ProviderFinder : ExpressionVisitor
 				{
 					public IQueryProvider Provider { get; private set; }
                     
@@ -759,14 +848,15 @@ namespace IQToolkit.Data.Advantage
 
 				protected override Expression VisitMethodCall(MethodCallExpression m)
 				{
-					// A server-mode grid lists a column's values as GroupBy(r => r.Col).Select(g => g.Key):
+					// A server-mode grid lists a column's values as GroupBy(r => r.Col).Select(g => g.Key), the Excel filter
+					// popup with OrderBy(g => g.Key) in between (DevExpress LinqServerModeCore.GetUniqueValuesStatic):
 					// same result as Select(r => r.Col).Distinct(), and the binder gets it wrong the same way on an association.
-					if (IsGroupByKeySelect(m, out var groupBy))
+					if (IsGroupByKeySelect(m, out var groupBy, out var keyOrderings))
 					{
 						var source = this.Visit(groupBy.Arguments[0]);
 						var rewritten = TryRewriteDistinctOverNavigation(source, GetLambda(groupBy.Arguments[1]));
 						if (rewritten != null)
-							return rewritten;
+							return OrderByValue(rewritten, keyOrderings);
 					}
 
 					if (m.Method.Name == "Distinct" && m.Arguments.Count == 1)
@@ -831,24 +921,55 @@ namespace IQToolkit.Data.Advantage
 					return e as LambdaExpression;
 				}
 
-				private static bool IsGroupByKeySelect(MethodCallExpression m, out MethodCallExpression groupBy)
+				/// <summary>
+				/// <c>GroupBy(src, key)</c>, then any OrderBy / ThenBy on <c>g.Key</c>, then <c>Select(g =&gt; g.Key)</c>.
+				/// <paramref name="keyOrderings"/> lists the ordering methods in the order they apply.
+				/// </summary>
+				private static bool IsGroupByKeySelect(MethodCallExpression m, out MethodCallExpression groupBy, out List<string> keyOrderings)
 				{
 					groupBy = null;
-					if (m.Method.DeclaringType != typeof(Queryable) || m.Method.Name != "Select" || m.Arguments.Count != 2)
+					keyOrderings = new List<string>();
+					if (m.Method.DeclaringType != typeof(Queryable) || m.Method.Name != "Select" || m.Arguments.Count != 2
+						|| !IsGroupingKey(GetLambda(m.Arguments[1])))
 						return false;
-					if (!(m.Arguments[0] is MethodCallExpression source)
+
+					var source = m.Arguments[0] as MethodCallExpression;
+					while (source != null
+						&& source.Method.DeclaringType == typeof(Queryable)
+						&& source.Arguments.Count == 2
+						&& (source.Method.Name == "OrderBy" || source.Method.Name == "OrderByDescending"
+							|| source.Method.Name == "ThenBy" || source.Method.Name == "ThenByDescending")
+						&& IsGroupingKey(GetLambda(source.Arguments[1])))
+					{
+						keyOrderings.Insert(0, source.Method.Name);
+						source = source.Arguments[0] as MethodCallExpression;
+					}
+
+					if (source == null
 						|| source.Method.DeclaringType != typeof(Queryable)
 						|| source.Method.Name != "GroupBy"
 						|| source.Arguments.Count != 2)
 						return false;
-					var resultSelector = GetLambda(m.Arguments[1]);
-					if (resultSelector == null
-						|| !(resultSelector.Body is MemberExpression key)
-						|| key.Expression != resultSelector.Parameters[0]
-						|| key.Member.Name != "Key")
-						return false;
 					groupBy = source;
 					return true;
+				}
+
+				private static bool IsGroupingKey(LambdaExpression lambda)
+				{
+					return lambda != null
+						&& lambda.Body is MemberExpression key
+						&& key.Expression == lambda.Parameters[0]
+						&& key.Member.Name == "Key";
+				}
+
+				// The orderings the grid put on g.Key, applied to the distinct values themselves
+				private static Expression OrderByValue(Expression values, List<string> orderings)
+				{
+					var valueType = TypeHelper.GetElementType(values.Type);
+					var value = Expression.Parameter(valueType, "k");
+					foreach (var ordering in orderings)
+						values = Expression.Call(typeof(Queryable), ordering, new[] { valueType, valueType }, values, Expression.Quote(Expression.Lambda(value, value)));
+					return values;
 				}
 
 				/// <summary>
@@ -882,12 +1003,27 @@ namespace IQToolkit.Data.Advantage
 
 				/// <summary>
 				/// <c>Select(src, p =&gt; new Row { M = expr, ... })</c> read back as <c>r.M</c>: returns <c>src</c>, <c>p</c> and <c>expr</c>.
+				/// The filter the grid put on the rows (<c>Where(r =&gt; ...)</c> on top of the projection) moves onto <c>src</c>,
+				/// each <c>r.N</c> replaced by the expression it projects.
 				/// </summary>
 				private static bool TryInlineProjectedMember(Expression source, MemberInfo member, out Expression innerSource, out ParameterExpression innerParam, out Expression binding)
 				{
 					innerSource = null;
 					innerParam = null;
 					binding = null;
+
+					var filters = new List<LambdaExpression>();
+					while (source is MethodCallExpression where
+						&& where.Method.DeclaringType == typeof(Queryable)
+						&& where.Method.Name == "Where"
+						&& where.Arguments.Count == 2)
+					{
+						var filter = GetLambda(where.Arguments[1]);
+						if (filter == null || filter.Parameters.Count != 1)
+							return false;
+						filters.Insert(0, filter);
+						source = where.Arguments[0];
+					}
 
 					if (!(source is MethodCallExpression select)
 						|| select.Method.DeclaringType != typeof(Queryable)
@@ -898,24 +1034,78 @@ namespace IQToolkit.Data.Advantage
 					if (projector == null || projector.Parameters.Count != 1)
 						return false;
 
-					if (projector.Body is MemberInitExpression init)
-					{
-						binding = init.Bindings.OfType<MemberAssignment>().FirstOrDefault(b => b.Member.Name == member.Name)?.Expression;
-					}
-					else if (projector.Body is NewExpression nex && nex.Members != null)
-					{
-						for (int i = 0; i < nex.Members.Count; i++)
-						{
-							if (nex.Members[i].Name == member.Name || nex.Members[i].Name == "get_" + member.Name)
-								binding = nex.Arguments[i];
-						}
-					}
+					binding = GetProjectedBinding(projector.Body, member.Name);
 					if (binding == null)
 						return false;
 
 					innerSource = select.Arguments[0];
 					innerParam = projector.Parameters[0];
+					foreach (var filter in filters)
+					{
+						var predicate = ProjectedMemberInliner.Inline(filter.Body, filter.Parameters[0], projector.Body);
+						if (predicate == null)
+							return false;
+						innerSource = Expression.Call(typeof(Queryable), "Where", new[] { innerParam.Type }, innerSource, Expression.Quote(Expression.Lambda(predicate, innerParam)));
+					}
 					return true;
+				}
+
+				private static Expression GetProjectedBinding(Expression projection, string memberName)
+				{
+					if (projection is MemberInitExpression init)
+						return init.Bindings.OfType<MemberAssignment>().FirstOrDefault(b => b.Member.Name == memberName)?.Expression;
+
+					if (projection is NewExpression nex && nex.Members != null)
+					{
+						for (int i = 0; i < nex.Members.Count; i++)
+						{
+							if (nex.Members[i].Name == memberName || nex.Members[i].Name == "get_" + memberName)
+								return nex.Arguments[i];
+						}
+					}
+					return null;
+				}
+
+				/// <summary>
+				/// A predicate on the projected rows rewritten on the projection's source. Null when it reads the row
+				/// other than through a projected member.
+				/// </summary>
+				class ProjectedMemberInliner : ExpressionVisitor
+				{
+					private readonly ParameterExpression row;
+					private readonly Expression projection;
+					private bool failed;
+
+					private ProjectedMemberInliner(ParameterExpression row, Expression projection)
+					{
+						this.row = row;
+						this.projection = projection;
+					}
+
+					public static Expression Inline(Expression predicate, ParameterExpression row, Expression projection)
+					{
+						var inliner = new ProjectedMemberInliner(row, projection);
+						var result = inliner.Visit(predicate);
+						return inliner.failed ? null : result;
+					}
+
+					protected override Expression VisitMemberAccess(MemberExpression m)
+					{
+						if (m.Expression != row)
+							return base.VisitMemberAccess(m);
+
+						var binding = GetProjectedBinding(projection, m.Member.Name);
+						if (binding == null)
+							failed = true;
+						return binding ?? m;
+					}
+
+					protected override Expression VisitParameter(ParameterExpression p)
+					{
+						if (p == row)
+							failed = true;
+						return p;
+					}
 				}
 
                 class NavigationFinder : ExpressionVisitor
