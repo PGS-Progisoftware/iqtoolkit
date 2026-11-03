@@ -322,6 +322,35 @@ namespace IQToolkit.Data.Advantage.Tests
             Assert.Equal(2, CustomerRows(provider).Count(r => r.HasOrders));
         }
 
+        // ---------------------------------------------------------------- computed bool compared with a constant
+
+        // The grid filters a tick column with [Col] = True / False. On a column projected from a comparison or an EXISTS,
+        // "a = b = 1" does not parse in ADS (error 2115): the predicate must be written alone, or under NOT.
+        [Fact]
+        public void Comparison_InProjection_ComparedWithBoolean_StaysCorrect()
+        {
+            var provider = GetTrimmingProvider();
+            var rows = from c in provider.GetTable<Customer>("Customers")
+                       where c.CustomerId > 0
+                       select new { c.CustomerId, IsParis = c.City == "Paris" };
+
+            Sql(provider, rows.Where(r => r.IsParis == true));
+
+            Assert.Equal(new[] { 2 }, rows.Where(r => r.IsParis == true).Select(r => r.CustomerId).ToArray());
+            Assert.Equal(new[] { 1, 3 }, rows.Where(r => r.IsParis == false).Select(r => r.CustomerId).OrderBy(id => id).ToArray());
+            Assert.Equal(2, rows.Count(r => r.IsParis != true));
+            Assert.Equal(1, rows.Count(r => false != r.IsParis));
+        }
+
+        [Fact]
+        public void Exists_InProjection_ComparedWithBoolean_StaysCorrect()
+        {
+            var provider = GetProvider();
+
+            Assert.Equal(2, CustomerRows(provider).Count(r => r.HasOrders == true));
+            Assert.Equal(new[] { 3 }, CustomerRows(provider).Where(r => r.HasOrders == false).Select(r => r.CustomerId).ToArray());
+        }
+
         [Fact]
         public void ScalarCount_InProjection_PagedByBaseColumn_StaysCorrect()
         {

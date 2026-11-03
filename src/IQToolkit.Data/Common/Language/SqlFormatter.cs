@@ -480,6 +480,11 @@ namespace IQToolkit.Data.Common
 
         protected override Expression VisitBinary(BinaryExpression b)
         {
+            if (this.TryVisitPredicateComparedWithBoolean(b))
+            {
+                return b;
+            }
+
             string op = this.GetOperator(b);
             Expression left = b.Left;
             Expression right = b.Right;
@@ -613,6 +618,58 @@ namespace IQToolkit.Data.Common
             }
             this.Write(")");
             return b;
+        }
+
+        /// <summary>
+        /// A predicate compared with a boolean constant (a grid filter [Col] = True on a column projected from a comparison)
+        /// is written as the predicate or its negation: SQL cannot compare a predicate with a value ("a = b = 1" does not parse).
+        /// </summary>
+        private bool TryVisitPredicateComparedWithBoolean(BinaryExpression b)
+        {
+            if (b.NodeType != ExpressionType.Equal && b.NodeType != ExpressionType.NotEqual)
+            {
+                return false;
+            }
+
+            Expression left = RemoveConversions(b.Left);
+            Expression right = RemoveConversions(b.Right);
+            Expression predicate;
+            bool value;
+            if (right is ConstantExpression rightConstant && rightConstant.Value is bool rightValue && this.IsPredicate(left))
+            {
+                predicate = left;
+                value = rightValue;
+            }
+            else if (left is ConstantExpression leftConstant && leftConstant.Value is bool leftValue && this.IsPredicate(right))
+            {
+                predicate = right;
+                value = leftValue;
+            }
+            else
+            {
+                return false;
+            }
+
+            if (value == (b.NodeType == ExpressionType.Equal))
+            {
+                this.VisitPredicate(predicate);
+            }
+            else
+            {
+                this.Write("NOT (");
+                this.VisitPredicate(predicate);
+                this.Write(")");
+            }
+            return true;
+        }
+
+        private static Expression RemoveConversions(Expression expression)
+        {
+            while (expression.NodeType == ExpressionType.Convert || expression.NodeType == ExpressionType.ConvertChecked)
+            {
+                expression = ((UnaryExpression)expression).Operand;
+            }
+            return expression;
         }
 
         protected virtual string GetOperator(string methodName)
