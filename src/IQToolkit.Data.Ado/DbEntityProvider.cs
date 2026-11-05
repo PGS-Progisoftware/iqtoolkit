@@ -200,9 +200,11 @@ namespace IQToolkit.Data
             this.StartUsingConnection();
             try
             {
-                DbCommand cmd = this.Connection.CreateCommand();
-                cmd.CommandText = commandText;
-                return cmd.ExecuteNonQuery();
+                using (DbCommand cmd = this.Connection.CreateCommand())
+                {
+                    cmd.CommandText = commandText;
+                    return cmd.ExecuteNonQuery();
+                }
             }
             finally
             {
@@ -300,10 +302,19 @@ namespace IQToolkit.Data
                 try
                 {
                     DbCommand cmd = this.GetCommand(command, paramValues);
-					DbDataReader reader = this.ExecuteReader(cmd);
-                  
-					var result = Project(reader, fnProjector, entity, true);
-					if (this.provider.ActionOpenedConnection)
+                    DbDataReader reader;
+                    try
+                    {
+                        reader = this.ExecuteReader(cmd);
+                    }
+                    catch
+                    {
+                        cmd.Dispose();
+                        throw;
+                    }
+
+                    var result = DisposeAfter(Project(reader, fnProjector, entity, true), cmd);
+                    if (this.provider.ActionOpenedConnection)
                     {
                         result = result.ToList();
                     }
@@ -311,12 +322,32 @@ namespace IQToolkit.Data
                     {
                         result = new EnumerateOnce<T>(result);
                     }
-                  
-					return result;
+
+                    return result;
                 }
                 finally
                 {
                     this.StopUsingConnection();
+                }
+            }
+
+            // Every command is disposed by the code that created it, never left to the GC: the Advantage provider's
+            // AdsCommand finalizer closes its statement from the finalizer thread, with a handle ACE may already have
+            // given to a table opened since (the X# RDD's tables then fail with 5018 or an access violation).
+            // A query's command outlives its reader, since disposing it closes the statement and the reader's cursor.
+            private static IEnumerable<T> DisposeAfter<T>(IEnumerable<T> source, IDisposable resource)
+            {
+                try
+                {
+                    // The foreach disposes the source's enumerator, which closes the reader, before the finally runs
+                    foreach (var item in source)
+                    {
+                        yield return item;
+                    }
+                }
+                finally
+                {
+                    resource.Dispose();
                 }
             }
 
@@ -366,9 +397,11 @@ namespace IQToolkit.Data
                 this.StartUsingConnection();
                 try
                 {
-                    DbCommand cmd = this.GetCommand(query, paramValues);
-                    this.rowsAffected = cmd.ExecuteNonQuery();
-                    return this.rowsAffected;
+                    using (DbCommand cmd = this.GetCommand(query, paramValues))
+                    {
+                        this.rowsAffected = cmd.ExecuteNonQuery();
+                        return this.rowsAffected;
+                    }
                 }
                 finally
                 {
@@ -400,14 +433,16 @@ namespace IQToolkit.Data
             private IEnumerable<int> ExecuteBatch(QueryCommand query, IEnumerable<object[]> paramSets)
             {
                 this.LogCommand(query, null);
-                DbCommand cmd = this.GetCommand(query, null);
-                foreach (var paramValues in paramSets)
+                using (DbCommand cmd = this.GetCommand(query, null))
                 {
-                    this.LogParameters(query, paramValues);
-                    this.LogMessage("");
-                    this.SetParameterValues(query, cmd, paramValues);
-                    this.rowsAffected = cmd.ExecuteNonQuery();
-                    yield return this.rowsAffected;
+                    foreach (var paramValues in paramSets)
+                    {
+                        this.LogParameters(query, paramValues);
+                        this.LogMessage("");
+                        this.SetParameterValues(query, cmd, paramValues);
+                        this.rowsAffected = cmd.ExecuteNonQuery();
+                        yield return this.rowsAffected;
+                    }
                 }
             }
 
@@ -435,30 +470,32 @@ namespace IQToolkit.Data
             private IEnumerable<T> ExecuteBatch<T>(QueryCommand query, IEnumerable<object[]> paramSets, Func<FieldReader, T> fnProjector, MappingEntity entity)
             {
                 this.LogCommand(query, null);
-                DbCommand cmd = this.GetCommand(query, null);
-                cmd.Prepare();
-                foreach (var paramValues in paramSets)
+                using (DbCommand cmd = this.GetCommand(query, null))
                 {
-                    this.LogParameters(query, paramValues);
-                    this.LogMessage("");
-                    this.SetParameterValues(query, cmd, paramValues);
-                    var reader = this.ExecuteReader(cmd);
-                    var freader = new DbFieldReader(this, reader);
-                    try
+                    cmd.Prepare();
+                    foreach (var paramValues in paramSets)
                     {
-                        if (reader.HasRows)
+                        this.LogParameters(query, paramValues);
+                        this.LogMessage("");
+                        this.SetParameterValues(query, cmd, paramValues);
+                        var reader = this.ExecuteReader(cmd);
+                        var freader = new DbFieldReader(this, reader);
+                        try
                         {
-                            reader.Read();
-                            yield return fnProjector(freader);
+                            if (reader.HasRows)
+                            {
+                                reader.Read();
+                                yield return fnProjector(freader);
+                            }
+                            else
+                            {
+                                yield return default(T);
+                            }
                         }
-                        else
+                        finally
                         {
-                            yield return default(T);
+                            ((IDataReader)reader).Close();
                         }
-                    }
-                    finally
-                    {
-                        ((IDataReader)reader).Close();
                     }
                 }
             }
@@ -469,19 +506,21 @@ namespace IQToolkit.Data
                 this.StartUsingConnection();
                 try
                 {
-                    DbCommand cmd = this.GetCommand(query, paramValues);
-                    var reader = this.ExecuteReader(cmd);
-                    var freader = new DbFieldReader(this, reader);
-                    try
+                    using (DbCommand cmd = this.GetCommand(query, paramValues))
                     {
-                        while (reader.Read())
+                        var reader = this.ExecuteReader(cmd);
+                        var freader = new DbFieldReader(this, reader);
+                        try
                         {
-                            yield return fnProjector(freader);
+                            while (reader.Read())
+                            {
+                                yield return fnProjector(freader);
+                            }
                         }
-                    }
-                    finally
-                    {
-                        ((IDataReader)reader).Close();
+                        finally
+                        {
+                            ((IDataReader)reader).Close();
+                        }
                     }
                 }
                 finally
