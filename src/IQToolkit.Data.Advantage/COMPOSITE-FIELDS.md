@@ -129,6 +129,41 @@ Translates to:
 (DATEDEP < :date) OR (DATEDEP = :date AND HEUREDEP <= :time)
 ```
 
+### Against midnight (1.0.10)
+
+The getter reads an hour it cannot parse (blank, VO's empty `"  :  "` picture) as midnight, while SQL sorts it below
+`'00:00'`. When the value's time is 00:00 (a grid's day filter is `>= day AND < next day`), four operators change so
+SQL selects the rows the getter's value selects:
+
+| Operator | SQL against `day 00:00` |
+|---|---|
+| `>=` | `DATEDEP >= :day` |
+| `<` | `DATEDEP < :day` |
+| `==` | `DATEDEP = :day AND HEUREDEP <= '00:00'` |
+| `!=` | `DATEDEP <> :day OR HEUREDEP > '00:00'` |
+
+`>` and `<=` already agree. An hour that is not `HH:mm` but sorts above `'00:00'` is not covered.
+
+## After a projection (1.0.10)
+
+A grid filters, sorts and groups on its DTO, not on the entity:
+`select new Row { DT = e.DTDEP }`, then `Where(r => r.DT >= day)`, `OrderBy(r => r.DT)` or the filter popup's
+`GroupBy(r => r.DT).OrderBy(g => g.Key).Select(g => g.Key)`. The projection carries the field as
+`new E { DATEDEP = …, HEUREDEP = … }.DTDEP` (the getter runs client-side), so after binding the comparison reads that
+minimal entity. The columnizer resolves its `DATEDEP` / `HEUREDEP` to their columns, and `ORDER BY` uses them for the key.
+Before 1.0.10 every one of these failed with "The member access … is not supported" before any SQL was sent.
+The filter popup groups on `DATEDEP, HEUREDEP` and builds each value with the getter, so it lists date **and** time.
+The same applies to `[CharDateTimeField]`.
+
+DevExpress criteria reach the provider as `CriteriaToExpressionConverter` writes them. Two need the rewriter's help:
+`[Col] Is Null` is `(object)row.Col == null` (the cast is looked through), and `GetDate([Col])` is
+`IIF(row.Col == null, row.Col, (DateTime?)row.Col.Value.Date)`: the composite returned in the null branch is written as
+`NULL`, and `.Value.Date` reads the date column. Ranges, `IsSameDay`, `Between`, `In` and the `IsOutlookInterval*`
+functions are plain comparisons. Not handled: a `Distinct` / `GroupBy` on `GetDate([Col])` groups on date and time, so
+a day with several hours comes back more than once.
+
+A query the provider cannot translate is logged as `Query FAILED in translation: …` followed by the inbound LINQ.
+
 ## How It Works
 
 1. **Attribute Detection**: The `CompositeFieldAttribute` marks a property as composite and identifies the backing fields.

@@ -29,11 +29,15 @@ namespace IQToolkit.Data.Advantage
 			// Check if this is a comparison operation
 			if (IsComparisonOperator(node.NodeType))
 			{
+				// DevExpress writes [Col] Is Null as (object)row.Col == null
+				var left = StripConvert(node.Left);
+				var right = StripConvert(node.Right);
+
 				// Check left side for composite field
-				if (node.Left is MemberExpression leftMember && IsCompositeField(leftMember.Member, out var leftDate, out var leftTime))
+				if (left is MemberExpression leftMember && IsCompositeField(leftMember.Member, out var leftDate, out var leftTime))
 				{
 					// Case 1: Right is also Composite
-					if (node.Right is MemberExpression rightMember && IsCompositeField(rightMember.Member, out var rightDate, out var rightTime))
+					if (right is MemberExpression rightMember && IsCompositeField(rightMember.Member, out var rightDate, out var rightTime))
 					{
 						return BuildCompositeToCompositeComparison(node.NodeType, leftMember, leftDate, leftTime, rightMember, rightDate, rightTime);
 					}
@@ -55,7 +59,7 @@ namespace IQToolkit.Data.Advantage
 				}
 
 				// Check right side for composite field (reversed comparison)
-				if (node.Right is MemberExpression rightComposite && IsCompositeField(rightComposite.Member, out var dateMember, out var timeMember))
+				if (right is MemberExpression rightComposite && IsCompositeField(rightComposite.Member, out var dateMember, out var timeMember))
 				{
 					if (TryExtractConstantValue(node.Left, out var constantValue))
 					{
@@ -76,6 +80,41 @@ namespace IQToolkit.Data.Advantage
 
 			// Not a composite field comparison, continue normal visitation
 			return base.VisitBinary(node);
+		}
+
+		// DevExpress GetDate([Col]) on a nullable column: IIF(col == null, col, (DateTime?)col.Value.Date).
+		// A composite has no single SQL value, and in that branch it is null: write null. The date part
+		// (col.Value.Date) reads the date column (VisitMemberAccess).
+		protected override Expression VisitConditional(ConditionalExpression c)
+		{
+			if (c.Test is BinaryExpression test
+				&& (test.NodeType == ExpressionType.Equal || test.NodeType == ExpressionType.NotEqual)
+				&& StripConvert(test.Left) is MemberExpression tested
+				&& IsCompositeField(tested.Member, out _, out _)
+				&& TryExtractConstantValue(test.Right, out var compared) && compared == null)
+			{
+				var whenNull = test.NodeType == ExpressionType.Equal ? c.IfTrue : c.IfFalse;
+				if (StripConvert(whenNull) is MemberExpression returned
+					&& returned.Member == tested.Member
+					&& DbExpressionComparer.AreEqual(returned.Expression, tested.Expression))
+				{
+					var nullValue = Expression.Constant(null, whenNull.Type);
+					c = test.NodeType == ExpressionType.Equal
+						? Expression.Condition(c.Test, nullValue, c.IfFalse, c.Type)
+						: Expression.Condition(c.Test, c.IfTrue, nullValue, c.Type);
+				}
+			}
+			return base.VisitConditional(c);
+		}
+
+		private static Expression StripConvert(Expression expression)
+		{
+			while (expression is UnaryExpression u
+				&& (u.NodeType == ExpressionType.Convert || u.NodeType == ExpressionType.ConvertChecked))
+			{
+				expression = u.Operand;
+			}
+			return expression;
 		}
 
 		protected override Expression VisitMemberAccess(MemberExpression m)
@@ -435,6 +474,27 @@ namespace IQToolkit.Data.Advantage
 			// String.Compare returns: < 0 if left < right, 0 if equal, > 0 if left > right
 			var stringCompareMethod = typeof(string).GetMethod("Compare",
 				new[] { typeof(string), typeof(string) });
+
+			// The getter reads an hour it cannot parse (blank, VO's empty "  :  ") as midnight, but SQL sorts it
+			// below '00:00'. Against midnight, every hour is at or after it: >= and < compare the date alone, and
+			// = takes the hours sorting up to '00:00'. A grid's day filter (>= day AND < next day) is this case.
+			if (value.Hour == 0 && value.Minute == 0)
+			{
+				var timeCompared = Expression.Call(stringCompareMethod, timeAccess, timeConst);
+				switch (op)
+				{
+					case ExpressionType.Equal:
+						return Expression.AndAlso(Expression.Equal(dateAccess, dateConst),
+							Expression.LessThanOrEqual(timeCompared, Expression.Constant(0)));
+					case ExpressionType.NotEqual:
+						return Expression.OrElse(Expression.NotEqual(dateAccess, dateConst),
+							Expression.GreaterThan(timeCompared, Expression.Constant(0)));
+					case ExpressionType.GreaterThanOrEqual:
+						return Expression.GreaterThanOrEqual(dateAccess, dateConst);
+					case ExpressionType.LessThan:
+						return Expression.LessThan(dateAccess, dateConst);
+				}
+			}
 
 			Expression result;
 

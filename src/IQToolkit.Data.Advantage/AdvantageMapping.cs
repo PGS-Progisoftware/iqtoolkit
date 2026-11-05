@@ -197,7 +197,7 @@ namespace IQToolkit.Data.Advantage
                             );
                          }
                      }
-                     else 
+                     else
                      {
                          var memberExpr = FindMemberInEntity(ex.Expression, m.Member);
                          if (memberExpr != null)
@@ -205,6 +205,17 @@ namespace IQToolkit.Data.Advantage
                              return this.Visit(memberExpr);
                          }
                      }
+                }
+                // A composite field read after a projection (select new Dto { DT = e.DTDEP } then Where(d => d.DT ...)):
+                // CompositeFieldProjectionExpander projects it through new E { DATEDEP = col, HEUREDEP = col }.DTDEP,
+                // and AdvantageCompositeFieldRewriter compares that minimal entity's DATEDEP / HEUREDEP: their columns.
+                else if (m.Expression is MemberInitExpression minit
+                    && !HasCompositeFieldAttribute(m.Member) && !HasCharDateTimeFieldAttribute(m.Member)
+                    && basicMapping.IsColumn(basicMapping.GetEntity(minit.Type), m.Member))
+                {
+                    var bound = FindMemberInEntity(minit, m.Member);
+                    if (bound != null)
+                        return this.Visit(bound);
                 }
 
                 return base.VisitMemberAccess(m);
@@ -336,6 +347,13 @@ namespace IQToolkit.Data.Advantage
                         entity = tableExpression.Entity;
                         alias = tableExpression.Alias;
                     }
+                    else if (virtualAccess.Expression is MemberInitExpression projected)
+                    {
+                        // Sorted after a projection: the minimal entity CompositeFieldProjectionExpander projects it through
+                        var projectedChar = (MemberInfo)projected.Type.GetProperty(attr.Member) ?? projected.Type.GetField(attr.Member);
+                        charExpr = projectedChar == null ? null : ColumnizerFindMemberInEntity(projected, projectedChar);
+                        return charExpr != null;
+                    }
                     else
                     {
                         return false;
@@ -379,6 +397,17 @@ namespace IQToolkit.Data.Advantage
                     {
                         entity = tableExpression.Entity;
                         alias = tableExpression.Alias;
+                    }
+                    else if (compositeAccess.Expression is MemberInitExpression projected)
+                    {
+                        // Sorted or grouped after a projection (the filter popup's OrderBy(g => g.Key)):
+                        // the minimal entity CompositeFieldProjectionExpander projects it through
+                        var projectedType = projected.Type;
+                        var projectedDate = (MemberInfo)projectedType.GetProperty(attr.DateMember) ?? projectedType.GetField(attr.DateMember);
+                        var projectedTime = (MemberInfo)projectedType.GetProperty(attr.TimeMember) ?? projectedType.GetField(attr.TimeMember);
+                        dateExpr = projectedDate == null ? null : ColumnizerFindMemberInEntity(projected, projectedDate);
+                        timeExpr = projectedTime == null ? null : ColumnizerFindMemberInEntity(projected, projectedTime);
+                        return dateExpr != null && timeExpr != null;
                     }
                     else
                     {

@@ -56,6 +56,38 @@ namespace IQToolkit.Data.Advantage.Tests
         }
     }
 
+    /// <summary>Hours as VO leaves them: blank, an empty "99:99" picture, midnight.</summary>
+    [Table(Name = "CompositeHours")]
+    public class CompositeHourEntity
+    {
+        [Column(IsPrimaryKey = true)]
+        public int Id { get; set; }
+
+        public DateTime? DateCol { get; set; }
+
+        [Column(DbType = "Char(5)")]
+        public string TimeCol { get; set; }
+
+        // Same reading as LocGen.DTDepartMateriel: an hour it cannot parse is midnight
+        [CompositeField(DateMember = nameof(DateCol), TimeMember = nameof(TimeCol))]
+        public DateTime? CompositeDate
+        {
+            get
+            {
+                if (!DateCol.HasValue)
+                    return null;
+                return Utils.TryParseTime(TimeCol, out int h, out int m)
+                    ? DateCol.Value.Date.AddHours(h).AddMinutes(m)
+                    : DateCol.Value.Date;
+            }
+            set
+            {
+                DateCol = value?.Date;
+                TimeCol = value?.ToString("HH:mm");
+            }
+        }
+    }
+
     [Table(Name="Customers")]
     public class Customer
     {

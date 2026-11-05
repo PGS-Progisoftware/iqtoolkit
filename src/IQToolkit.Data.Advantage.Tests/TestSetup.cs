@@ -92,6 +92,25 @@ namespace IQToolkit.Data.Advantage.Tests
                         cmd.CommandText = "INSERT INTO TestTable (Id, Name, Value, DateCol, TimeCol) VALUES (4, 'Delta', 40.0, NULL, NULL)";
                         cmd.ExecuteNonQuery();
 
+                        // CompositeHours: hours the getter reads as midnight but SQL sorts below '00:00'
+                        cmd.CommandText = "CREATE TABLE CompositeHours (Id Integer, DateCol Date, TimeCol Char(5))";
+                        cmd.ExecuteNonQuery();
+                        string[] compositeHours =
+                        {
+                            "1, '2023-01-01', '10:00'",
+                            "2, '2023-01-01', ''",
+                            "3, '2023-01-01', '  :  '",
+                            "4, '2023-01-02', ''",
+                            "5, '2023-01-02', '00:00'",
+                            "6, '2023-01-02', '09:15'",
+                            "7, NULL, NULL",
+                        };
+                        foreach (var values in compositeHours)
+                        {
+                            cmd.CommandText = $"INSERT INTO CompositeHours (Id, DateCol, TimeCol) VALUES ({values})";
+                            cmd.ExecuteNonQuery();
+                        }
+
                         // Create Customers Table
                         cmd.CommandText = @"
                             CREATE TABLE Customers (

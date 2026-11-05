@@ -554,7 +554,27 @@ namespace IQToolkit.Data.Advantage
                 }
             }
 
-            return base.GetExecutionPlan(expression);
+            try
+            {
+                return base.GetExecutionPlan(expression);
+            }
+            catch (Exception ex) when (this.Log != null)
+            {
+                // A query that cannot be translated never reaches ExecuteWithTiming, so nothing else logs it, and a
+                // grid's instant feedback source swallows the exception: the grid just spins.
+                this.Log.WriteLine($"Query FAILED in translation: {ex.GetType().Name}: {ex.Message}");
+                try
+                {
+                    this.Log.WriteLine(this.InboundQueryFormatter != null
+                        ? this.InboundQueryFormatter(expression)
+                        : FormatInboundExpression(expression));
+                }
+                catch (Exception formatEx)
+                {
+                    this.Log.WriteLine($"-- LINQ (inbound) logging failed: {formatEx.Message}");
+                }
+                throw;
+            }
         }
 
         // Core CommandGatherer throws on CLR Block; keep workaround in Advantage only.
