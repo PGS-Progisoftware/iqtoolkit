@@ -262,6 +262,25 @@ namespace IQToolkit.Data.Advantage.Tests
     }
 
     /// <summary>
+    /// Detail table without a primary key, like LocDet: a line is found by NumLoc + Ligne,
+    /// and deleting or moving a line rewrites those two columns.
+    /// </summary>
+    [Table(Name = "DetailLines")]
+    public class DetailLine
+    {
+        [Column(DbType = "Char(9)")]
+        public string NumLoc { get; set; }
+
+        [Column(DbType = "Char(3)")]
+        public string Ligne { get; set; }
+
+        [Column(DbType = "Char(30)")]
+        public string Label { get; set; }
+
+        public double Qty { get; set; }
+    }
+
+    /// <summary>
     /// Entity for CharDateTimeField tests.
     /// DTMAJ is stored as CHAR(12) in "yyyyMMddHHmm" format.
     /// </summary>

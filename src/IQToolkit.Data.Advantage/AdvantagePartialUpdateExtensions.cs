@@ -106,13 +106,21 @@ namespace IQToolkit.Data.Advantage
         /// WHERE is supplied as a predicate, and SET comes from an anonymous object whose
         /// property names match mapped column members and whose values are constant/closure values.
         ///
-        /// The predicate must include a single-column primary-key equality. Additional AND
-        /// conjuncts (mapped columns, CompositeField, CharDateTimeField) are appended to the
-        /// UPDATE WHERE — e.g. optimistic concurrency:
+        /// Entity with a primary key: the predicate must include an equality on each key column.
+        /// Additional AND conjuncts (mapped columns, CompositeField, CharDateTimeField) are appended
+        /// to the UPDATE WHERE — e.g. optimistic concurrency:
         /// table.UpdatePartial(
         ///     x => x.IdTiers == id &amp;&amp; x.DTModification == expected,
         ///     x => new { DTModification = next }
         /// );
+        ///
+        /// Entity without a primary key (e.g. a DBF detail table): the predicate alone selects the rows,
+        /// and every row it matches is updated. The columns it tests can be in the SET.
+        /// table.UpdatePartial(
+        ///     x => x.NumLoc == numLoc &amp;&amp; x.Ligne == ligne,
+        ///     x => new { Quantite = 3 }
+        /// );
+        /// Returns the number of rows updated: check it when exactly one row is expected.
         /// </summary>
         public static int UpdatePartial<T>(
             this IEntityTable<T> table,
@@ -140,7 +148,7 @@ namespace IQToolkit.Data.Advantage
             var tableAlias = new TableAlias();
             var tex = new TableExpression(tableAlias, entityMeta, tableName);
 
-            // WHERE: required PK equality, plus optional AND conjuncts (columns / composite / char-datetime)
+            // WHERE: an equality per key column when the entity has a key, plus the other AND conjuncts (columns / composite / char-datetime)
             var whereExpr = BuildWhereFromPredicate(entityMeta, basicMapping, provider.Language, tex, where);
 
             var assignments = BuildAssignmentsFromSet(entityMeta, basicMapping, provider.Language, tex, set);
@@ -534,45 +542,66 @@ namespace IQToolkit.Data.Advantage
             TableExpression tex,
             Expression<Func<T, bool>> where)
         {
-            var pkMembers = mapping.GetPrimaryKeyMembers(entityMeta).ToList();
-            if (pkMembers.Count != 1)
-            {
-                throw new NotSupportedException("UpdatePartial with a predicate currently supports only single-column primary keys.");
-            }
-
-            var pkMember = pkMembers[0];
+            var keyMembers = mapping.GetPrimaryKeyMembers(entityMeta).ToList();
             var param = where.Parameters[0];
+
+            // Without a key nothing else limits the rows: a predicate that tests no column would update the whole table.
+            if (keyMembers.Count == 0 && !ContainsParameter(where.Body, param))
+            {
+                throw new NotSupportedException(
+                    $"UpdatePartial where-predicate must test at least one column: '{entityMeta.StaticType.Name}' has no primary key.");
+            }
 
             var conjuncts = StripConvert(where.Body).Split(ExpressionType.AndAlso, ExpressionType.And);
 
-            Expression pkWhere = null;
+            var keyEqualities = new Dictionary<MemberInfo, Expression>();
             var extraConjuncts = new List<Expression>();
 
             foreach (var conjunct in conjuncts)
             {
-                if (TryBuildPrimaryKeyEquality(conjunct, param, pkMember, mapping, language, tex, entityMeta, out var pkEquality))
+                MemberInfo keyMember = null;
+                Expression keyEquality = null;
+                foreach (var candidate in keyMembers)
                 {
-                    if (pkWhere != null)
+                    if (TryBuildPrimaryKeyEquality(conjunct, param, candidate, mapping, language, tex, entityMeta, out keyEquality))
                     {
-                        throw new NotSupportedException("UpdatePartial where-predicate must contain exactly one primary-key equality.");
+                        keyMember = candidate;
+                        break;
                     }
-
-                    pkWhere = pkEquality;
                 }
-                else
+
+                if (keyMember == null)
                 {
                     extraConjuncts.Add(conjunct);
+                    continue;
                 }
+
+                if (keyEqualities.ContainsKey(keyMember))
+                {
+                    throw new NotSupportedException(
+                        $"UpdatePartial where-predicate must contain exactly one equality on the primary key column '{keyMember.Name}'.");
+                }
+
+                keyEqualities.Add(keyMember, keyEquality);
             }
 
-            if (pkWhere == null)
+            var missingKeys = keyMembers.Where(k => !keyEqualities.ContainsKey(k)).Select(k => k.Name).ToList();
+            if (missingKeys.Count > 0)
             {
-                throw new NotSupportedException("UpdatePartial where-predicate must include a simple equality on the primary key, e.g. x => x.Id == someKey && extra.");
+                throw new NotSupportedException(
+                    "UpdatePartial where-predicate must include a simple equality on each primary key column, " +
+                    $"e.g. x => x.Id == someKey && extra. Missing: {string.Join(", ", missingKeys)}.");
+            }
+
+            Expression result = null;
+            foreach (var keyMember in keyMembers)
+            {
+                result = result == null ? keyEqualities[keyMember] : result.And(keyEqualities[keyMember]);
             }
 
             if (extraConjuncts.Count == 0)
             {
-                return pkWhere;
+                return result;
             }
 
             var extra = extraConjuncts.Join(ExpressionType.AndAlso);
@@ -581,7 +610,7 @@ namespace IQToolkit.Data.Advantage
             extra = AdvantageCharDateTimeFieldRewriter.Rewrite(extra);
             extra = new PredicateMemberToColumnRewriter(entityMeta, mapping, language, tex, param).Rewrite(extra);
 
-            return pkWhere.And(extra);
+            return result == null ? extra : result.And(extra);
         }
 
         private static bool TryBuildPrimaryKeyEquality(

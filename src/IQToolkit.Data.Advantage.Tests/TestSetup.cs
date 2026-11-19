@@ -325,6 +325,33 @@ namespace IQToolkit.Data.Advantage.Tests
                             cmd.CommandText = $"INSERT INTO LookupCodes (Id, Type, Code, Libelle) VALUES ({values})";
                             cmd.ExecuteNonQuery();
                         }
+
+                        // DetailLines — no primary key, like LocDet: a line is NumLoc + Ligne (right-aligned position),
+                        // and a deleted line is recycled as NumLoc 'zzzzzzzzz' with a blank Ligne.
+                        cmd.CommandText = @"
+                            CREATE TABLE DetailLines (
+                                NumLoc Char(9),
+                                Ligne Char(3),
+                                Label Char(30),
+                                Qty Double
+                            )
+                        ";
+                        cmd.ExecuteNonQuery();
+
+                        string[] detailLines =
+                        {
+                            "'226060778', '  1', 'One', 1",
+                            "'226060778', '  2', 'Two', 2",
+                            "'226060778', '  3', 'Three', 3",
+                            "'226060779', '  1', 'Other one', 10",
+                            "'226060779', '  2', 'Other two', 20",
+                            "'zzzzzzzzz', '', '', 0",
+                        };
+                        foreach (var values in detailLines)
+                        {
+                            cmd.CommandText = $"INSERT INTO DetailLines (NumLoc, Ligne, Label, Qty) VALUES ({values})";
+                            cmd.ExecuteNonQuery();
+                        }
                     }
                 }
                 // _initialized = true;
