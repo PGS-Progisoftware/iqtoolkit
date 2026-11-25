@@ -34,6 +34,62 @@ namespace IQToolkit.Data.Common
             return new RelationshipBinder(mapper).Visit(expression);
         }
 
+        /// <summary>
+        /// Joins to <paramref name="projection"/>'s select the singleton associations <paramref name="expression"/> reads
+        /// (a group key, a distinct value), so it becomes columns of the joined rows. Returns the projection over the
+        /// join, its projector and <paramref name="bound"/> both remapped onto it; the projection itself when the
+        /// expression reads no association.
+        /// The query binder groups and distincts before this binder runs: a key x.Nav.Prop was projected as every
+        /// column of x, the association joined only above the GROUP BY, so each row made its own group.
+        /// </summary>
+        public static ProjectionExpression JoinAssociations(QueryMapper mapper, ProjectionExpression projection, Expression expression, out Expression bound)
+        {
+            bound = expression;
+            if (!SingletonAssociationFinder.Finds(mapper.Mapping, expression))
+                return projection;
+
+            var binder = new RelationshipBinder(mapper) { currentFrom = projection.Select };
+            var joined = binder.Visit(expression);
+            if (binder.currentFrom == projection.Select)
+                return projection;
+
+            var alias = new TableAlias();
+            var aliases = GetAliases(binder.currentFrom);
+            var source = ColumnProjector.ProjectColumns(binder.language, projection.Projector, null, alias, aliases);
+            var read = ColumnProjector.ProjectColumns(binder.language, joined, source.Columns, alias, aliases);
+            bound = read.Projector;
+            return new ProjectionExpression(new SelectExpression(alias, read.Columns, binder.currentFrom, null), source.Projector, projection.Aggregator);
+        }
+
+        private class SingletonAssociationFinder : DbExpressionVisitor
+        {
+            private readonly QueryMapping mapping;
+            private bool found;
+
+            private SingletonAssociationFinder(QueryMapping mapping)
+            {
+                this.mapping = mapping;
+            }
+
+            public static bool Finds(QueryMapping mapping, Expression expression)
+            {
+                var finder = new SingletonAssociationFinder(mapping);
+                finder.Visit(expression);
+                return finder.found;
+            }
+
+            protected override Expression VisitMemberAccess(MemberExpression m)
+            {
+                var entity = GetEntityExpression(m.Expression);
+                if (entity != null && this.mapping.IsRelationship(entity.Entity, m.Member) && this.mapping.IsSingletonRelationship(entity.Entity, m.Member))
+                {
+                    this.found = true;
+                    return m;
+                }
+                return base.VisitMemberAccess(m);
+            }
+        }
+
         protected override Expression VisitSelect(SelectExpression select)
         {
             // look for association references in SelectExpression clauses
