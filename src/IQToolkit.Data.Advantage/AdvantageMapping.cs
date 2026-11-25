@@ -888,6 +888,10 @@ namespace IQToolkit.Data.Advantage
 							return OrderByValue(rewritten, keyOrderings);
 					}
 
+					var groupsOrderedAfterSelect = OrderGroupsAfterSelect(m);
+					if (groupsOrderedAfterSelect != null)
+						return this.Visit(groupsOrderedAfterSelect);
+
 					if (m.Method.Name == "Distinct" && m.Arguments.Count == 1)
 					{
 						var source = this.Visit(m.Arguments[0]);
@@ -981,6 +985,78 @@ namespace IQToolkit.Data.Advantage
 						return false;
 					groupBy = source;
 					return true;
+				}
+
+				/// <summary>
+				/// A grid groups an instant feedback list with <c>GroupBy(k).OrderBy(g =&gt; g.Key).Select(g =&gt; new C { P0 = g.Key,
+				/// P1 = g.Count() })</c>. Ordered before the Select, the binder no longer ties the count to the GROUP BY and counts
+				/// each group with a correlated subquery, which ADS cannot match on a NULL key (a blank code read through an
+				/// association): the derived table holds that group as a blank, and the group counted 0 rows. Returns the same
+				/// query ordered after the Select on the member that holds the key, which counts with COUNT(*) in the GROUP BY
+				/// select; null when the query has another shape.
+				/// </summary>
+				private static Expression OrderGroupsAfterSelect(MethodCallExpression m)
+				{
+					if (m.Method.DeclaringType != typeof(Queryable) || m.Method.Name != "Select" || m.Arguments.Count != 2)
+						return null;
+					var selector = GetLambda(m.Arguments[1]);
+					if (selector == null || selector.Parameters.Count != 1 || IsGroupingKey(selector))
+						return null;
+					var keyMember = MemberHoldingGroupingKey(selector);
+					if (keyMember == null)
+						return null;
+
+					var orderings = new List<string>();
+					var source = m.Arguments[0] as MethodCallExpression;
+					while (source != null
+						&& source.Method.DeclaringType == typeof(Queryable)
+						&& source.Arguments.Count == 2
+						&& (source.Method.Name == "OrderBy" || source.Method.Name == "OrderByDescending"
+							|| source.Method.Name == "ThenBy" || source.Method.Name == "ThenByDescending")
+						&& IsGroupingKey(GetLambda(source.Arguments[1])))
+					{
+						orderings.Insert(0, source.Method.Name);
+						source = source.Arguments[0] as MethodCallExpression;
+					}
+
+					if (orderings.Count == 0
+						|| source == null
+						|| source.Method.DeclaringType != typeof(Queryable)
+						|| source.Method.Name != "GroupBy"
+						|| source.Arguments.Count != 2)
+						return null;
+
+					var rowType = selector.Body.Type;
+					Expression rows = Expression.Call(typeof(Queryable), "Select", new[] { selector.Parameters[0].Type, rowType }, source, Expression.Quote(selector));
+					var row = Expression.Parameter(rowType, "r");
+					var key = Expression.Lambda(Expression.MakeMemberAccess(row, keyMember), row);
+					foreach (var ordering in orderings)
+						rows = Expression.Call(typeof(Queryable), ordering, new[] { rowType, key.Body.Type }, rows, Expression.Quote(key));
+					return rows;
+				}
+
+				// The property of new C { ..., M = g.Key, ... } that holds the grouping key
+				private static MemberInfo MemberHoldingGroupingKey(LambdaExpression selector)
+				{
+					bool IsKey(Expression e) => e is MemberExpression key && key.Expression == selector.Parameters[0] && key.Member.Name == "Key";
+
+					if (selector.Body is MemberInitExpression init)
+						return init.Bindings.OfType<MemberAssignment>().FirstOrDefault(b => IsKey(b.Expression))?.Member;
+
+					if (selector.Body is NewExpression nex && nex.Members != null)
+					{
+						for (int i = 0; i < nex.Members.Count; i++)
+						{
+							if (!IsKey(nex.Arguments[i]))
+								continue;
+							var member = nex.Members[i];
+							// Anonymous types may list their getters
+							if (member is MethodInfo getter && getter.Name.StartsWith("get_"))
+								member = nex.Type.GetProperty(getter.Name.Substring(4));
+							return member;
+						}
+					}
+					return null;
 				}
 
 				private static bool IsGroupingKey(LambdaExpression lambda)

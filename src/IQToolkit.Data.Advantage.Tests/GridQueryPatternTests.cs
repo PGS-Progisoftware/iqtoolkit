@@ -618,6 +618,189 @@ namespace IQToolkit.Data.Advantage.Tests
             Assert.Equal(new[] { "Alice" }, list.Select(n => n.Trim()).ToArray());
         }
 
+        // ---------------------------------------------------------------- grid grouping on a projected association
+        // What DevExpress LinqServerModeCore sends to group an instant feedback grid (captured from XSavBrowser):
+        // Where(filter).GroupBy(r => r.Col).OrderBy(g => g.Key).Select(g => new C { P0 = g.Key, P1 = g.Count() }).
+        // The key read through an association used to be grouped on every column of the parent row, the association
+        // being joined afterwards: one group per row, and ADS refused the memo columns (7200 / 2145).
+
+        public class GroupInfo<T>
+        {
+            public T P0 { get; set; }
+            public int P1 { get; set; }
+        }
+
+        public class OrderLabelRow
+        {
+            public int OrderId { get; set; }
+            public string Label { get; set; }
+            public string Stripped { get; set; }
+        }
+
+        // As XSavBrowser's Description: the label read through the association with a macro stripped
+        private static IQueryable<OrderLabelRow> OrderLabelRows(AdvantageQueryProvider provider)
+        {
+            return from o in provider.GetTable<Order>("Orders")
+                   where o.OrderId > 0
+                   select new OrderLabelRow
+                   {
+                       OrderId = o.OrderId,
+                       Label = string.IsNullOrEmpty(o.Customer.Name) ? o.Customer.Name : o.Customer.Name.Replace("li", ""),
+                       Stripped = o.Customer.Name.Replace("li", ""),
+                   };
+        }
+
+        private static string GroupByClause(string sql)
+        {
+            var start = sql.IndexOf("GROUP BY", StringComparison.OrdinalIgnoreCase);
+            if (start < 0)
+                return "";
+            var end = sql.IndexOf('\n', start);
+            return end < 0 ? sql.Substring(start) : sql.Substring(start, end - start);
+        }
+
+        private static string[] Groups<T>(IEnumerable<GroupInfo<T>> groups)
+            => groups.Select(g => (g.P0 == null ? "null" : g.P0.ToString().Trim()) + "=" + g.P1).ToArray();
+
+        [Fact]
+        public void GroupRows_OnProjectedAssociationColumn_CountsPerLabel()
+        {
+            var provider = GetProvider();
+            var query = OrderRows(provider)
+                .GroupBy(r => r.CustomerName).OrderBy(g => g.Key)
+                .Select(g => new GroupInfo<string> { P0 = g.Key, P1 = g.Count() });
+
+            var sql = Sql(provider, query);
+            var list = query.ToList();
+
+            Assert.Equal(new[] { "Alice=2", "Bob=1" }, Groups(list));
+            Assert.DoesNotContain("OrderDate", GroupByClause(sql));
+        }
+
+        [Fact]
+        public void GroupRows_OnProjectedAssociationColumn_WithFilter_CountsMatchingRows()
+        {
+            var provider = GetProvider();
+            // Orders 102 (Alice, 200) and 103 (Bob, 150)
+            var query = OrderRows(provider)
+                .Where(r => r.Total > 120m)
+                .GroupBy(r => r.CustomerName).OrderBy(g => g.Key)
+                .Select(g => new GroupInfo<string> { P0 = g.Key, P1 = g.Count() });
+
+            Sql(provider, query);
+            var list = query.ToList();
+
+            Assert.Equal(new[] { "Alice=1", "Bob=1" }, Groups(list));
+        }
+
+        [Fact]
+        public void GroupRows_OnProjectedFilteredAssociationColumn_HonoursFilterAndBlankKey()
+        {
+            var provider = GetProvider();
+            var query = ParentRows(provider)
+                .GroupBy(r => r.LangueLibelle).OrderBy(g => g.Key)
+                .Select(g => new GroupInfo<string> { P0 = g.Key, P1 = g.Count() });
+
+            Sql(provider, query);
+            var list = query.ToList();
+
+            // Parents 1 and 3 have LibLang 'FR' -> France; parent 2 is blank -> NULL, never a blank-code PAYS libelle
+            Assert.Equal(new[] { "null=1", "France=2" }, Groups(list));
+        }
+
+        [Fact]
+        public void GroupRows_OnBlankBaseColumn_CountsTheBlankGroup()
+        {
+            var provider = GetProvider();
+            // Categorie: VERRE on parents 1 and 4, INOX on 2, blank on 3
+            var query = provider.GetTable<LookupParent>("LookupParents")
+                .GroupBy(p => p.Categorie).OrderBy(g => g.Key)
+                .Select(g => new GroupInfo<string> { P0 = g.Key, P1 = g.Count() });
+
+            Sql(provider, query);
+            var list = query.ToList();
+
+            Assert.Equal(new[] { "1", "1", "2" }, list.Select(g => g.P1.ToString()).ToArray());
+        }
+
+        [Fact]
+        public void GroupRows_OnAssociationColumn_Direct_CountsPerLabel()
+        {
+            var provider = GetProvider();
+            var query = provider.GetTable<Order>("Orders")
+                .GroupBy(o => o.Customer.Name).OrderBy(g => g.Key)
+                .Select(g => new GroupInfo<string> { P0 = g.Key, P1 = g.Count() });
+
+            Sql(provider, query);
+            var list = query.ToList();
+
+            Assert.Equal(new[] { "Alice=2", "Bob=1" }, Groups(list));
+        }
+
+        [Fact]
+        public void GroupRows_OnComputedAssociationLabel_GroupsOnTheLabel()
+        {
+            var provider = GetProvider();
+            var query = OrderLabelRows(provider)
+                .GroupBy(r => r.Label).OrderBy(g => g.Key)
+                .Select(g => new GroupInfo<string> { P0 = g.Key, P1 = g.Count() });
+
+            Sql(provider, query);
+            var list = query.ToList();
+
+            Assert.Equal(new[] { "Ace=2", "Bob=1" }, Groups(list));
+        }
+
+        [Fact]
+        public void GroupRows_OnStrippedAssociationLabel_GroupsOnTheLabel()
+        {
+            var provider = GetProvider();
+            var query = OrderLabelRows(provider)
+                .GroupBy(r => r.Stripped).OrderBy(g => g.Key)
+                .Select(g => new GroupInfo<string> { P0 = g.Key, P1 = g.Count() });
+
+            Sql(provider, query);
+            var list = query.ToList();
+
+            Assert.Equal(new[] { "Ace=2", "Bob=1" }, Groups(list));
+        }
+
+        [Fact]
+        public void FilterPopupValues_OnComputedAssociationLabel_ReturnsSortedDistinctValues()
+        {
+            var provider = GetProvider();
+            var query = OrderLabelRows(provider).GroupBy(r => r.Label).OrderBy(g => g.Key).Select(g => g.Key).Take(10000);
+
+            Sql(provider, query);
+            var list = query.ToList();
+
+            Assert.Equal(new[] { "Ace", "Bob" }, list.Select(n => n.Trim()).ToArray());
+        }
+
+        [Fact]
+        public void Distinct_OnComputedAssociationLabel_ReturnsDistinctValues()
+        {
+            var provider = GetProvider();
+            var query = OrderLabelRows(provider).Select(r => r.Label).Distinct();
+
+            Sql(provider, query);
+            var list = query.ToList();
+
+            Assert.Equal(new[] { "Ace", "Bob" }, list.Select(n => n.Trim()).OrderBy(n => n).ToArray());
+        }
+
+        [Fact]
+        public void Distinct_OnStrippedAssociationLabel_ReturnsDistinctValues()
+        {
+            var provider = GetProvider();
+            var query = OrderLabelRows(provider).Select(r => r.Stripped).Distinct();
+
+            Sql(provider, query);
+            var list = query.ToList();
+
+            Assert.Equal(new[] { "Ace", "Bob" }, list.Select(n => n.Trim()).OrderBy(n => n).ToArray());
+        }
+
         // ---------------------------------------------------------------- associations stay joined after TOP
 
         [Fact]

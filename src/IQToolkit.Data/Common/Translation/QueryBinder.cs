@@ -525,6 +525,8 @@ namespace IQToolkit.Data.Common
 
             this.map[keySelector.Parameters[0]] = projection.Projector;
             Expression keyExpr = this.Visit(keySelector.Body);
+            // A key read through an association is grouped on the joined columns, not on every column of the row
+            projection = RelationshipBinder.JoinAssociations(this.mapper, projection, keyExpr, out keyExpr);
 
             Expression elemExpr = projection.Projector;
             if (elementSelector != null)
@@ -557,6 +559,7 @@ namespace IQToolkit.Data.Common
             // recompute key columns for group expressions relative to subquery (need these for doing the correlation predicate)
             this.map[keySelector.Parameters[0]] = subqueryBasis.Projector;
             Expression subqueryKey = this.Visit(keySelector.Body);
+            subqueryBasis = RelationshipBinder.JoinAssociations(this.mapper, subqueryBasis, subqueryKey, out subqueryKey);
 
             // use same projection trick to get group-by expressions based on subquery
             ProjectedColumns subqueryKeyPC = ColumnProjector.ProjectColumns(this.language, keyAffinity, subqueryKey, null, subqueryBasis.Select.Alias, subqueryBasis.Select.Alias);
@@ -755,10 +758,12 @@ namespace IQToolkit.Data.Common
         private Expression BindDistinct(Expression source)
         {
             ProjectionExpression projection = this.VisitSequence(source);
+            // Values read through an association are compared on the joined columns, not on every column of the row
+            projection = RelationshipBinder.JoinAssociations(this.mapper, projection, projection.Projector, out var projector);
             SelectExpression select = projection.Select;
             var alias = this.GetNextAlias();
 
-            ProjectedColumns pc = ColumnProjector.ProjectColumns(this.language, ProjectionAffinity.Server, projection.Projector, null, alias, projection.Select.Alias);
+            ProjectedColumns pc = ColumnProjector.ProjectColumns(this.language, ProjectionAffinity.Server, projector, null, alias, projection.Select.Alias);
             return new ProjectionExpression(
                 new SelectExpression(alias, pc.Columns, projection.Select, null, null, null, true, null, null, false),
                 pc.Projector
